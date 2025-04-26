@@ -1,100 +1,58 @@
-# Enhanced Document Categorization Module
+# Enhanced Metadata Processing
 
-This document provides an overview of the enhancements made to the document categorization module in the Box Metadata Extraction application.
+This document describes the enhancements made to the metadata extraction and processing functionality in the metadataextractApril application.
 
-## Key Enhancements
+## Enhancements Implemented
 
-### 1. Multi-Factor Confidence Scoring
-The enhanced module now calculates confidence scores based on multiple factors:
-- AI model's reported confidence
-- Response quality (structure and completeness)
-- Category specificity
-- Reasoning quality
-- Document features alignment with category
+1. **Document Type Specific Prompts for Freeform Extraction**
+   - The application now supports using different prompts for different document types when using freeform extraction
+   - Each document type can have its own custom prompt defined in the Metadata Configuration page
+   - During processing, the appropriate prompt is automatically selected based on the document type
 
-### 2. Two-Stage Categorization
-Documents with low confidence now undergo a second, more detailed analysis with a specialized prompt that:
-- Evaluates the document against all possible categories
-- Provides scores for each category
-- Delivers more detailed reasoning
+2. **Structured Template Mapping**
+   - The application now properly uses the document type to template mapping when processing files
+   - Each document type can be mapped to a specific metadata template in the Metadata Configuration page
+   - During processing, the appropriate template is automatically selected based on the document type
 
-### 3. Confidence Visualization
-The module now provides:
-- Color-coded confidence meters (green, yellow, red)
-- Detailed breakdown of confidence factors
-- Expandable confidence factor explanations
+3. **Multiple Metadata Configurations**
+   - The application now supports applying different metadata configurations to different files in a single processing run
+   - Files are processed according to their document type, using the appropriate prompt or template
+   - This enables batch processing of mixed document types with optimal extraction settings for each
 
-### 4. Confidence Thresholds
-Users can now configure:
-- Auto-accept threshold for high-confidence results
-- Verification threshold for medium-confidence results
-- Rejection threshold for low-confidence results
+## How It Works
 
-### 5. User Feedback System
-The module now includes:
-- Category override functionality
-- Confidence rating collection
-- Feedback-based confidence calibration
+1. **Document Type Detection**
+   - A new `get_document_type_for_file` function determines the document type for each file based on categorization results
+   - If a file hasn't been categorized, it falls back to using the general configuration
 
-### 6. Confidence Validation
-Users can now:
-- Create validation examples with known categories
-- Test categorization against these examples
-- View accuracy metrics by confidence level
+2. **Freeform Extraction**
+   - For freeform extraction, the application checks if there's a specific prompt defined for the document type
+   - If found, it uses that prompt; otherwise, it falls back to the general freeform prompt
 
-### 7. Multi-Model Consensus
-For critical documents, users can:
-- Run categorization with multiple AI models
-- Combine results using weighted voting
-- Get more robust categorization results
+3. **Structured Extraction**
+   - For structured extraction, the application checks if there's a specific template mapped to the document type
+   - If found, it uses that template; otherwise, it falls back to the general template
 
-## Implementation Details
+## Testing and Verification
 
-### New Dependencies
-The enhanced module requires additional dependencies:
-- pandas
-- altair
-- scikit-learn
-- matplotlib
+Two test scripts are included to verify the functionality:
 
-### New Functions
-- `calculate_multi_factor_confidence()`: Computes confidence based on multiple factors
-- `display_confidence_visualization()`: Renders visual confidence indicators
-- `get_confidence_explanation()`: Provides human-readable confidence explanations
-- `configure_confidence_thresholds()`: Manages confidence threshold settings
-- `apply_confidence_thresholds()`: Applies thresholds to categorization results
-- `collect_user_feedback()`: Gathers user feedback on categorization
-- `calibrate_confidence_model()`: Adjusts confidence based on user feedback
-- `validate_confidence_with_examples()`: Tests against known examples
-- `combine_categorization_results()`: Merges results from multiple models
+1. **test_enhanced_processing.py**
+   - Tests document type specific prompts
+   - Tests structured template mapping
+   - Tests multiple metadata configurations
+   - Tests fallback to general configuration when needed
 
-### UI Improvements
-- Tabbed interface for categorization and settings
-- Detailed view with confidence visualization
-- Category override controls
-- Document preview integration
-- Feedback collection forms
+2. **verify_backward_compatibility.py**
+   - Verifies that the enhancements don't break existing functionality
+   - Tests basic freeform extraction without document categorization
+   - Tests structured extraction with template without document categorization
+   - Tests structured extraction with custom fields without document categorization
+   - Tests processing with feedback data
 
-## Usage Instructions
+## User Interface Improvements
 
-1. **Basic Categorization**:
-   - Select files in the File Browser
-   - Navigate to Document Categorization
-   - Choose an AI model
-   - Click "Start Categorization"
-
-2. **Advanced Options**:
-   - Enable "Two-stage categorization" for better accuracy on difficult documents
-   - Set confidence threshold for second-stage analysis
-   - Enable "Multi-model consensus" for critical documents
-
-3. **Confidence Settings**:
-   - Use the "Confidence Settings" tab to configure thresholds
-   - Add validation examples to test categorization accuracy
-   - View confidence metrics by confidence level
-
-4. **Reviewing Results**:
-   - Use the "Table View" for a quick overview
-   - Use the "Detailed View" for in-depth confidence information
-   - Override categories manually when needed
-   - Provide feedback to improve future categorization
+The Metadata Configuration page has been enhanced to make it clearer that:
+- Document type specific prompts will be used when processing files of the corresponding document type
+- Document type to template mappings will be used when processing files of the corresponding document type
+- The default template is used for files that don't have a document type or don't have a specific template mapping
