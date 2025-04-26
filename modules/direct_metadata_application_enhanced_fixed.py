@@ -70,6 +70,340 @@ def flatten_metadata_for_template(metadata_values):
     
     return flattened_metadata
 
+# Function to check if a value is a placeholder
+def is_placeholder(value):
+    """Check if a value appears to be a placeholder"""
+    if not isinstance(value, str):
+        return False
+        
+    placeholder_indicators = [
+        "insert", "placeholder", "<", ">", "[", "]", 
+        "enter", "fill in", "your", "example"
+    ]
+    
+    value_lower = value.lower()
+    return any(indicator in value_lower for indicator in placeholder_indicators)
+
+# Moved outside of apply_metadata_direct to make it directly importable
+def apply_metadata_to_file_direct(client, file_id, metadata_values, normalize_keys=True, filter_placeholders=True, file_id_to_file_name=None):
+    """
+    Apply metadata to a single file with direct client reference
+    
+    Args:
+        client: Box client object
+        file_id: File ID to apply metadata to
+        metadata_values: Dictionary of metadata values to apply
+        normalize_keys: Whether to normalize keys (lowercase, replace spaces with underscores)
+        filter_placeholders: Whether to filter out placeholder values
+        file_id_to_file_name: Optional dictionary mapping file IDs to file names
+        
+    Returns:
+        dict: Result of metadata application
+    """
+    try:
+        # Initialize file_id_to_file_name if not provided
+        if file_id_to_file_name is None:
+            file_id_to_file_name = {}
+        
+        file_name = file_id_to_file_name.get(file_id, "Unknown")
+        
+        # CRITICAL FIX: Validate metadata values
+        if not metadata_values:
+            logger.error(f"No metadata found for file {file_name} ({file_id})")
+            return {
+                "file_id": file_id,
+                "file_name": file_name,
+                "success": False,
+                "error": "No metadata found for this file"
+            }
+        
+        # Log original metadata values for debugging
+        logger.info(f"Original metadata values for file {file_name} ({file_id}): {json.dumps(metadata_values, default=str)}")
+        
+        # Filter out placeholder values if requested
+        if filter_placeholders:
+            filtered_metadata = {}
+            for key, value in metadata_values.items():
+                if not is_placeholder(value):
+                    filtered_metadata[key] = value
+            
+            # If all values were placeholders, keep at least one for debugging
+            if not filtered_metadata and metadata_values:
+                # Get the first key-value pair
+                first_key = next(iter(metadata_values))
+                filtered_metadata[first_key] = metadata_values[first_key]
+                filtered_metadata["_note"] = "All other values were placeholders"
+            
+            metadata_values = filtered_metadata
+        
+        # If no metadata values after filtering, return error
+        if not metadata_values:
+            logger.warning(f"No valid metadata found for file {file_name} ({file_id}) after filtering")
+            return {
+                "file_id": file_id,
+                "file_name": file_name,
+                "success": False,
+                "error": "No valid metadata found after filtering placeholders"
+            }
+        
+        # Normalize keys if requested
+        if normalize_keys:
+            normalized_metadata = {}
+            for key, value in metadata_values.items():
+                # Convert to lowercase and replace spaces with underscores
+                normalized_key = key.lower().replace(" ", "_").replace("-", "_")
+                normalized_metadata[normalized_key] = value
+            metadata_values = normalized_metadata
+        
+        # Convert all values to strings for Box metadata
+        for key, value in metadata_values.items():
+            if not isinstance(value, (str, int, float, bool)):
+                metadata_values[key] = str(value)
+        
+        # Debug logging
+        logger.info(f"Applying metadata for file: {file_name} ({file_id})")
+        logger.info(f"Metadata values after normalization: {json.dumps(metadata_values, default=str)}")
+        
+        # Get file object
+        file_obj = client.file(file_id=file_id)
+        
+        # Check if we're using structured extraction with a template
+        if "metadata_config" in st.session_state and st.session_state.metadata_config.get("extraction_method") == "structured":
+            # Get document type for this file (if categorized)
+            document_type = None
+            if (
+                hasattr(st.session_state, "document_categorization") and 
+                st.session_state.document_categorization.get("is_categorized", False) and
+                file_id in st.session_state.document_categorization["results"]
+            ):
+                document_type = st.session_state.document_categorization["results"][file_id]["document_type"]
+                logger.info(f"File {file_name} has document type: {document_type}")
+            
+            # Get template ID based on document type if available
+            template_id = None
+            
+            # Check if we have a document type and a mapping for it
+            if document_type and hasattr(st.session_state, "document_type_to_template"):
+                mapped_template_id = st.session_state.document_type_to_template.get(document_type)
+                if mapped_template_id and mapped_template_id != "None - Use custom fields":
+                    template_id = mapped_template_id
+                    logger.info(f"Using document type specific template for {document_type}: {template_id}")
+            
+            # If no document type specific template, use the general one
+            if not template_id:
+                template_id = st.session_state.metadata_config.get("template_id", "")
+                logger.info(f"Using general template: {template_id}")
+            
+            # Skip if template_id is "None - Use custom fields" or empty
+            if not template_id or template_id == "None - Use custom fields":
+                logger.info(f"No template selected, using properties metadata instead")
+                # Apply metadata as properties
+                try:
+                    # Apply metadata as properties
+                    metadata = file_obj.metadata("global", "properties").create(metadata_values)
+                    logger.info(f"Successfully applied properties metadata to file {file_name} ({file_id})")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": True,
+                        "metadata": metadata
+                    }
+                except Exception as e:
+                    if "already exists" in str(e).lower():
+                        # If metadata already exists, update it
+                        try:
+                            # Create update operations
+                            operations = []
+                            for key, value in metadata_values.items():
+                                operations.append({
+                                    "op": "replace",
+                                    "path": f"/{key}",
+                                    "value": value
+                                })
+                            
+                            # Update metadata
+                            logger.info(f"Properties metadata already exists, updating with operations")
+                            metadata = file_obj.metadata("global", "properties").update(operations)
+                            
+                            logger.info(f"Successfully updated properties metadata for file {file_name} ({file_id})")
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "success": True,
+                                "metadata": metadata
+                            }
+                        except Exception as update_error:
+                            logger.error(f"Error updating properties metadata for file {file_name} ({file_id}): {str(update_error)}")
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "success": False,
+                                "error": f"Error updating properties metadata: {str(update_error)}"
+                            }
+                    else:
+                        logger.error(f"Error creating properties metadata for file {file_name} ({file_id}): {str(e)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error creating properties metadata: {str(e)}"
+                        }
+            
+            # Parse the template ID to extract the correct components
+            # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
+            parts = template_id.split('_')
+            
+            # Extract the scope and enterprise ID
+            scope = parts[0]  # e.g., "enterprise"
+            enterprise_id = parts[1] if len(parts) > 1 else ""
+            
+            # Extract the actual template key (last part)
+            if len(parts) > 2:
+                # For templates with format scope_id_templateKey
+                template_key = parts[2]
+            else:
+                # For templates with format scope_templateKey or just templateKey
+                template_key = parts[-1]
+            
+            # Format the scope with enterprise ID
+            scope_with_id = f"{scope}_{enterprise_id}"
+            
+            logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
+            
+            try:
+                # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
+                formatted_metadata = fix_metadata_format(metadata_values)
+                logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
+                
+                # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
+                flattened_metadata = flatten_metadata_for_template(formatted_metadata)
+                logger.info(f"Flattened metadata after flatten_metadata_for_template: {json.dumps(flattened_metadata, default=str)}")
+                
+                # Log the flattened metadata being sent to Box API
+                logger.info(f"Sending flattened metadata to Box API: {json.dumps(flattened_metadata, default=str)}")
+                
+                # Apply metadata using the template with properly formatted and flattened metadata
+                metadata = file_obj.metadata(scope_with_id, template_key).create(flattened_metadata)
+                logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
+                return {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "success": True,
+                    "metadata": metadata
+                }
+            except Exception as e:
+                if "already exists" in str(e).lower():
+                    # If metadata already exists, update it
+                    try:
+                        # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
+                        formatted_metadata = fix_metadata_format(metadata_values)
+                        logger.info(f"Formatted metadata after fix_metadata_format (update path): {json.dumps(formatted_metadata, default=str)}")
+                        
+                        # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
+                        flattened_metadata = flatten_metadata_for_template(formatted_metadata)
+                        logger.info(f"Flattened metadata after flatten_metadata_for_template (update path): {json.dumps(flattened_metadata, default=str)}")
+                        
+                        # Log the flattened metadata being sent to Box API
+                        logger.info(f"Updating with flattened metadata: {json.dumps(flattened_metadata, default=str)}")
+                        
+                        # Create update operations with flattened metadata
+                        operations = []
+                        for key, value in flattened_metadata.items():
+                            operations.append({
+                                "op": "replace",
+                                "path": f"/{key}",
+                                "value": value
+                            })
+                        
+                        # Update metadata
+                        logger.info(f"Template metadata already exists, updating with operations: {json.dumps(operations, default=str)}")
+                        metadata = file_obj.metadata(scope_with_id, template_key).update(operations)
+                        
+                        logger.info(f"Successfully updated template metadata for file {file_name} ({file_id})")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": True,
+                            "metadata": metadata
+                        }
+                    except Exception as update_error:
+                        logger.error(f"Error updating template metadata for file {file_name} ({file_id}): {str(update_error)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error updating template metadata: {str(update_error)}"
+                        }
+                else:
+                    logger.error(f"Error creating template metadata for file {file_name} ({file_id}): {str(e)}")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Error creating template metadata: {str(e)}"
+                    }
+        else:
+            # For non-template metadata (freeform), apply as properties
+            try:
+                # Apply metadata as properties
+                metadata = file_obj.metadata("global", "properties").create(metadata_values)
+                logger.info(f"Successfully applied metadata to file {file_name} ({file_id})")
+                return {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "success": True,
+                    "metadata": metadata
+                }
+            except Exception as e:
+                if "already exists" in str(e).lower():
+                    # If metadata already exists, update it
+                    try:
+                        # Create update operations
+                        operations = []
+                        for key, value in metadata_values.items():
+                            operations.append({
+                                "op": "replace",
+                                "path": f"/{key}",
+                                "value": value
+                            })
+                        
+                        # Update metadata
+                        logger.info(f"Metadata already exists, updating with operations")
+                        metadata = file_obj.metadata("global", "properties").update(operations)
+                        
+                        logger.info(f"Successfully updated metadata for file {file_name} ({file_id})")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": True,
+                            "metadata": metadata
+                        }
+                    except Exception as update_error:
+                        logger.error(f"Error updating metadata for file {file_name} ({file_id}): {str(update_error)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error updating metadata: {str(update_error)}"
+                        }
+                else:
+                    logger.error(f"Error creating metadata for file {file_name} ({file_id}): {str(e)}")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Error creating metadata: {str(e)}"
+                    }
+    
+    except Exception as e:
+        logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
+        return {
+            "file_id": file_id,
+            "file_name": file_id_to_file_name.get(file_id, "Unknown"),
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }
+
 def apply_metadata_direct():
     """
     Direct approach to apply metadata to Box files with comprehensive fixes
@@ -286,251 +620,6 @@ def apply_metadata_direct():
     # Progress tracking
     progress_container = st.container()
     
-    # Function to check if a value is a placeholder
-    def is_placeholder(value):
-        """Check if a value appears to be a placeholder"""
-        if not isinstance(value, str):
-            return False
-            
-        placeholder_indicators = [
-            "insert", "placeholder", "<", ">", "[", "]", 
-            "enter", "fill in", "your", "example"
-        ]
-        
-        value_lower = value.lower()
-        return any(indicator in value_lower for indicator in placeholder_indicators)
-    
-    # Direct function to apply metadata to a single file
-    def apply_metadata_to_file_direct(client, file_id, metadata_values):
-        """
-        Apply metadata to a single file with direct client reference
-        
-        Args:
-            client: Box client object
-            file_id: File ID to apply metadata to
-            metadata_values: Dictionary of metadata values to apply
-            
-        Returns:
-            dict: Result of metadata application
-        """
-        try:
-            file_name = file_id_to_file_name.get(file_id, "Unknown")
-            
-            # CRITICAL FIX: Validate metadata values
-            if not metadata_values:
-                logger.error(f"No metadata found for file {file_name} ({file_id})")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": "No metadata found for this file"
-                }
-            
-            # Log original metadata values for debugging
-            logger.info(f"Original metadata values for file {file_name} ({file_id}): {json.dumps(metadata_values, default=str)}")
-            
-            # Filter out placeholder values if requested
-            if filter_placeholders:
-                filtered_metadata = {}
-                for key, value in metadata_values.items():
-                    if not is_placeholder(value):
-                        filtered_metadata[key] = value
-                
-                # If all values were placeholders, keep at least one for debugging
-                if not filtered_metadata and metadata_values:
-                    # Get the first key-value pair
-                    first_key = next(iter(metadata_values))
-                    filtered_metadata[first_key] = metadata_values[first_key]
-                    filtered_metadata["_note"] = "All other values were placeholders"
-                
-                metadata_values = filtered_metadata
-            
-            # If no metadata values after filtering, return error
-            if not metadata_values:
-                logger.warning(f"No valid metadata found for file {file_name} ({file_id}) after filtering")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": "No valid metadata found after filtering placeholders"
-                }
-            
-            # Normalize keys if requested
-            if normalize_keys:
-                normalized_metadata = {}
-                for key, value in metadata_values.items():
-                    # Convert to lowercase and replace spaces with underscores
-                    normalized_key = key.lower().replace(" ", "_").replace("-", "_")
-                    normalized_metadata[normalized_key] = value
-                metadata_values = normalized_metadata
-            
-            # Convert all values to strings for Box metadata
-            for key, value in metadata_values.items():
-                if not isinstance(value, (str, int, float, bool)):
-                    metadata_values[key] = str(value)
-            
-            # Debug logging
-            logger.info(f"Applying metadata for file: {file_name} ({file_id})")
-            logger.info(f"Metadata values after normalization: {json.dumps(metadata_values, default=str)}")
-            
-            # Get file object
-            file_obj = client.file(file_id=file_id)
-            
-            # Check if we're using structured extraction with a template
-            if "metadata_config" in st.session_state and st.session_state.metadata_config.get("extraction_method") == "structured" and st.session_state.metadata_config.get("use_template"):
-                # Get template information
-                template_id = st.session_state.metadata_config.get("template_id", "")
-                
-                # Parse the template ID to extract the correct components
-                # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
-                parts = template_id.split('_')
-                
-                # Extract the scope and enterprise ID
-                scope = parts[0]  # e.g., "enterprise"
-                enterprise_id = parts[1] if len(parts) > 1 else ""
-                
-                # Extract the actual template key (last part)
-                template_key = parts[-1] if len(parts) > 2 else template_id
-                
-                # Format the scope with enterprise ID
-                scope_with_id = f"{scope}_{enterprise_id}"
-                
-                logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
-                
-                try:
-                    # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
-                    formatted_metadata = fix_metadata_format(metadata_values)
-                    logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
-                    
-                    # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
-                    flattened_metadata = flatten_metadata_for_template(formatted_metadata)
-                    logger.info(f"Flattened metadata after flatten_metadata_for_template: {json.dumps(flattened_metadata, default=str)}")
-                    
-                    # Log the flattened metadata being sent to Box API
-                    logger.info(f"Sending flattened metadata to Box API: {json.dumps(flattened_metadata, default=str)}")
-                    
-                    # Apply metadata using the template with properly formatted and flattened metadata
-                    metadata = file_obj.metadata(scope_with_id, template_key).create(flattened_metadata)
-                    logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
-                    return {
-                        "file_id": file_id,
-                        "file_name": file_name,
-                        "success": True,
-                        "metadata": metadata
-                    }
-                except Exception as e:
-                    if "already exists" in str(e).lower():
-                        # If metadata already exists, update it
-                        try:
-                            # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
-                            formatted_metadata = fix_metadata_format(metadata_values)
-                            logger.info(f"Formatted metadata after fix_metadata_format (update path): {json.dumps(formatted_metadata, default=str)}")
-                            
-                            # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
-                            flattened_metadata = flatten_metadata_for_template(formatted_metadata)
-                            logger.info(f"Flattened metadata after flatten_metadata_for_template (update path): {json.dumps(flattened_metadata, default=str)}")
-                            
-                            # Log the flattened metadata being sent to Box API
-                            logger.info(f"Updating with flattened metadata: {json.dumps(flattened_metadata, default=str)}")
-                            
-                            # Create update operations with flattened metadata
-                            operations = []
-                            for key, value in flattened_metadata.items():
-                                operations.append({
-                                    "op": "replace",
-                                    "path": f"/{key}",
-                                    "value": value
-                                })
-                            
-                            # Update metadata
-                            logger.info(f"Template metadata already exists, updating with operations: {json.dumps(operations, default=str)}")
-                            metadata = file_obj.metadata(scope_with_id, template_key).update(operations)
-                            
-                            logger.info(f"Successfully updated template metadata for file {file_name} ({file_id})")
-                            return {
-                                "file_id": file_id,
-                                "file_name": file_name,
-                                "success": True,
-                                "metadata": metadata
-                            }
-                        except Exception as update_error:
-                            logger.error(f"Error updating template metadata for file {file_name} ({file_id}): {str(update_error)}")
-                            return {
-                                "file_id": file_id,
-                                "file_name": file_name,
-                                "success": False,
-                                "error": f"Error updating template metadata: {str(update_error)}"
-                            }
-                    else:
-                        logger.error(f"Error creating template metadata for file {file_name} ({file_id}): {str(e)}")
-                        return {
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "success": False,
-                            "error": f"Error creating template metadata: {str(e)}"
-                        }
-            else:
-                # For non-template metadata (freeform), apply as properties
-                try:
-                    # Apply metadata as properties
-                    metadata = file_obj.metadata("global", "properties").create(metadata_values)
-                    logger.info(f"Successfully applied metadata to file {file_name} ({file_id})")
-                    return {
-                        "file_id": file_id,
-                        "file_name": file_name,
-                        "success": True,
-                        "metadata": metadata
-                    }
-                except Exception as e:
-                    if "already exists" in str(e).lower():
-                        # If metadata already exists, update it
-                        try:
-                            # Create update operations
-                            operations = []
-                            for key, value in metadata_values.items():
-                                operations.append({
-                                    "op": "replace",
-                                    "path": f"/{key}",
-                                    "value": value
-                                })
-                            
-                            # Update metadata
-                            logger.info(f"Metadata already exists, updating with operations")
-                            metadata = file_obj.metadata("global", "properties").update(operations)
-                            
-                            logger.info(f"Successfully updated metadata for file {file_name} ({file_id})")
-                            return {
-                                "file_id": file_id,
-                                "file_name": file_name,
-                                "success": True,
-                                "metadata": metadata
-                            }
-                        except Exception as update_error:
-                            logger.error(f"Error updating metadata for file {file_name} ({file_id}): {str(update_error)}")
-                            return {
-                                "file_id": file_id,
-                                "file_name": file_name,
-                                "success": False,
-                                "error": f"Error updating metadata: {str(update_error)}"
-                            }
-                    else:
-                        logger.error(f"Error creating metadata for file {file_name} ({file_id}): {str(e)}")
-                        return {
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "success": False,
-                            "error": f"Error creating metadata: {str(e)}"
-                        }
-        
-        except Exception as e:
-            logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
-            return {
-                "file_id": file_id,
-                "file_name": file_id_to_file_name.get(file_id, "Unknown"),
-                "success": False,
-                "error": f"Unexpected error: {str(e)}"
-            }
-    
     # Handle apply button click - DIRECT APPROACH WITHOUT THREADING
     if apply_button:
         # Check if client exists directly again
@@ -561,7 +650,14 @@ def apply_metadata_direct():
             logger.info(f"Metadata values for file {file_name} ({file_id}) before application: {json.dumps(metadata_values, default=str)}")
             
             # Apply metadata directly
-            result = apply_metadata_to_file_direct(client, file_id, metadata_values)
+            result = apply_metadata_to_file_direct(
+                client, 
+                file_id, 
+                metadata_values, 
+                normalize_keys=normalize_keys, 
+                filter_placeholders=filter_placeholders,
+                file_id_to_file_name=file_id_to_file_name
+            )
             
             if result["success"]:
                 results.append(result)
