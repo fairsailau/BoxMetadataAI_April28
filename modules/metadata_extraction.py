@@ -1,8 +1,8 @@
 import streamlit as st
 import logging
 import json
-import requests
 from typing import Dict, Any, List, Optional
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 def metadata_extraction():
     """
-    Implement metadata extraction using Box AI API
+    Implement metadata extraction using Box AI API with optimized SDK calls
+    while maintaining compatibility with existing code
     
     Returns:
         dict: Dictionary of extraction functions
@@ -19,7 +20,7 @@ def metadata_extraction():
     # Structured metadata extraction
     def extract_structured_metadata(file_id, fields=None, metadata_template=None, ai_model="azure__openai__gpt_4o_mini"):
         """
-        Extract structured metadata from a file using Box AI API
+        Extract structured metadata from a file using Box AI API with optimized SDK calls
         
         Args:
             file_id (str): Box file ID
@@ -33,6 +34,81 @@ def metadata_extraction():
         try:
             # Get client from session state
             client = st.session_state.client
+            
+            # Check if client has the ai attribute (SDK v2)
+            if hasattr(client, 'ai'):
+                # Use SDK v2 approach
+                logger.info("Using Box SDK v2 for structured metadata extraction")
+                
+                # Create AI agent configuration
+                ai_agent = {
+                    "type": "ai_agent_extract_structured",
+                    "long_text": {
+                        "model": ai_model,
+                        "mode": "default"
+                    },
+                    "basic_text": {
+                        "model": ai_model,
+                        "mode": "default"
+                    }
+                }
+                
+                # Create items array with file ID
+                items = [{"id": file_id, "type": "file"}]
+                
+                # Prepare request parameters
+                request_params = {
+                    "items": items,
+                    "ai_agent": ai_agent
+                }
+                
+                # Add template or fields
+                if metadata_template:
+                    request_params["metadata_template"] = metadata_template
+                elif fields:
+                    # Convert fields to Box API format if needed
+                    api_fields = []
+                    for field in fields:
+                        if "key" in field:
+                            # Field is already in Box API format
+                            api_fields.append(field)
+                        else:
+                            # Convert field to Box API format
+                            api_field = {
+                                "key": field.get("name", ""),
+                                "displayName": field.get("display_name", field.get("name", "")),
+                                "type": field.get("type", "string")
+                            }
+                            
+                            # Add description and prompt if available
+                            if "description" in field:
+                                api_field["description"] = field["description"]
+                            if "prompt" in field:
+                                api_field["prompt"] = field["prompt"]
+                            
+                            # Add options for enum fields
+                            if field.get("type") == "enum" and "options" in field:
+                                api_field["options"] = field["options"]
+                            
+                            api_fields.append(api_field)
+                    
+                    request_params["fields"] = api_fields
+                else:
+                    raise ValueError("Either fields or metadata_template must be provided")
+                
+                # Make API call using the SDK
+                logger.info(f"Making Box AI API call for structured extraction with SDK v2")
+                
+                # Use the SDK's create_ai_extract_structured method
+                try:
+                    response = client.ai.create_ai_extract_structured(**request_params)
+                    return response
+                except AttributeError:
+                    logger.warning("SDK v2 ai.create_ai_extract_structured method not available, falling back to direct API call")
+                    # Fall back to direct API call
+            
+            # Fall back to direct API call (original implementation)
+            logger.info("Using direct API call for structured metadata extraction")
             
             # Get access token from client
             access_token = None
@@ -79,7 +155,7 @@ def metadata_extraction():
             if metadata_template:
                 request_body["metadata_template"] = metadata_template
             elif fields:
-            # Convert fields to Box API format if needed
+                # Convert fields to Box API format if needed
                 api_fields = []
                 for field in fields:
                     if "key" in field:
@@ -131,7 +207,7 @@ def metadata_extraction():
     # Freeform metadata extraction
     def extract_freeform_metadata(file_id, prompt, ai_model="azure__openai__gpt_4o_mini"):
         """
-        Extract freeform metadata from a file using Box AI API
+        Extract freeform metadata from a file using Box AI API with optimized SDK calls
         
         Args:
             file_id (str): Box file ID
@@ -144,6 +220,43 @@ def metadata_extraction():
         try:
             # Get client from session state
             client = st.session_state.client
+            
+            # Check if client has the ai attribute (SDK v2)
+            if hasattr(client, 'ai'):
+                # Use SDK v2 approach
+                logger.info("Using Box SDK v2 for freeform metadata extraction")
+                
+                # Create AI agent configuration
+                ai_agent = {
+                    "type": "ai_agent_extract",
+                    "long_text": {
+                        "model": ai_model
+                    },
+                    "basic_text": {
+                        "model": ai_model
+                    }
+                }
+                
+                # Create items array with file ID
+                items = [{"id": file_id, "type": "file"}]
+                
+                # Make API call using the SDK
+                logger.info(f"Making Box AI API call for freeform extraction with SDK v2")
+                
+                # Use the SDK's create_ai_extract method
+                try:
+                    response = client.ai.create_ai_extract(
+                        prompt=prompt,
+                        items=items,
+                        ai_agent=ai_agent
+                    )
+                    return response
+                except AttributeError:
+                    logger.warning("SDK v2 ai.create_ai_extract method not available, falling back to direct API call")
+                    # Fall back to direct API call
+            
+            # Fall back to direct API call (original implementation)
+            logger.info("Using direct API call for freeform metadata extraction")
             
             # Get access token from client
             access_token = None
@@ -215,6 +328,10 @@ def extract_metadata_freeform(client, file_id, prompt=None, ai_model="azure__ope
     """
     Backward compatibility wrapper for extract_freeform_metadata
     """
+    # Store client in session state if not already there
+    if not hasattr(st.session_state, "client") or st.session_state.client is None:
+        st.session_state.client = client
+    
     # Get extraction functions
     extraction_functions = metadata_extraction()
     
@@ -229,6 +346,10 @@ def extract_metadata_structured(client, file_id, template_id=None, custom_fields
     """
     Backward compatibility wrapper for extract_structured_metadata
     """
+    # Store client in session state if not already there
+    if not hasattr(st.session_state, "client") or st.session_state.client is None:
+        st.session_state.client = client
+    
     # Get extraction functions
     extraction_functions = metadata_extraction()
     
