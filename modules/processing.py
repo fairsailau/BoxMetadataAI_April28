@@ -125,6 +125,15 @@ def process_files():
                 )
                 st.session_state.processing_state["processing_mode"] = processing_mode
         
+        # Auto-apply metadata option
+        auto_apply_metadata = st.checkbox(
+            "Automatically apply metadata after extraction",
+            value=True,
+            help="If checked, extracted metadata will be automatically applied to files after processing",
+            key="auto_apply_metadata_checkbox"
+        )
+        st.session_state.processing_state["auto_apply_metadata"] = auto_apply_metadata
+        
         # Template management
         with st.expander("Metadata Template Management"):
             st.write("#### Save Current Configuration as Template")
@@ -213,6 +222,7 @@ def process_files():
                 "max_retries": max_retries,
                 "retry_delay": retry_delay,
                 "processing_mode": processing_mode,
+                "auto_apply_metadata": auto_apply_metadata,
                 "visualization_data": {}
             }
             
@@ -285,6 +295,96 @@ def process_files():
                             break
                     
                     st.error(f"{file_name}: {error}")
+            
+            # Auto-apply metadata if enabled
+            if st.session_state.processing_state.get("auto_apply_metadata", False) and not st.session_state.processing_state.get("metadata_applied", False):
+                st.write("### Applying Metadata")
+                st.info("Automatically applying extracted metadata to files...")
+                
+                # Import apply_metadata function
+                from modules.direct_metadata_application_enhanced_fixed import apply_metadata_to_file_direct
+                
+                # Get client
+                client = st.session_state.client
+                
+                # Create a progress bar for metadata application
+                apply_progress_bar = st.progress(0)
+                apply_status_text = st.empty()
+                
+                # Initialize counters
+                success_count = 0
+                error_count = 0
+                
+                # Create dictionaries for file mapping
+                file_id_to_metadata = {}
+                file_id_to_file_name = {}
+                
+                # Initialize file_id_to_file_name from selected_files
+                for file_info in st.session_state.selected_files:
+                    if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
+                        file_id = str(file_info["id"])
+                        file_id_to_file_name[file_id] = file_info.get("name", f"File {file_id}")
+                
+                # Get results from processing state
+                results_map = st.session_state.processing_state.get("results", {})
+                
+                # Extract metadata for each file
+                for file_id, payload in results_map.items():
+                    # Most APIs put your AI fields under payload["results"]
+                    metadata = payload.get("results", payload)
+                    
+                    # If metadata is a string that looks like JSON, try to parse it
+                    if isinstance(metadata, str):
+                        try:
+                            parsed_metadata = json.loads(metadata)
+                            if isinstance(parsed_metadata, dict):
+                                metadata = parsed_metadata
+                        except json.JSONDecodeError:
+                            # Not valid JSON, keep as is
+                            pass
+                    
+                    # If payload has an "answer" field that's a JSON string, parse it
+                    if isinstance(payload, dict) and "answer" in payload and isinstance(payload["answer"], str):
+                        try:
+                            parsed_answer = json.loads(payload["answer"])
+                            if isinstance(parsed_answer, dict):
+                                metadata = parsed_answer
+                        except json.JSONDecodeError:
+                            # Not valid JSON, keep as is
+                            pass
+                    
+                    file_id_to_metadata[file_id] = metadata
+                
+                # Apply metadata to each file
+                total_files = len(file_id_to_metadata)
+                for i, (file_id, metadata) in enumerate(file_id_to_metadata.items()):
+                    file_name = file_id_to_file_name.get(file_id, "Unknown")
+                    apply_status_text.text(f"Applying metadata to {file_name}... ({i+1}/{total_files})")
+                    
+                    # Apply metadata
+                    result = apply_metadata_to_file_direct(client, file_id, metadata)
+                    
+                    # Update counters
+                    if result["success"]:
+                        success_count += 1
+                    else:
+                        error_count += 1
+                    
+                    # Update progress bar
+                    apply_progress_bar.progress((i + 1) / total_files)
+                
+                # Clear progress indicators
+                apply_progress_bar.empty()
+                apply_status_text.empty()
+                
+                # Display results
+                if error_count == 0:
+                    st.success(f"Successfully applied metadata to all {success_count} files!")
+                else:
+                    st.warning(f"Applied metadata to {success_count} files with {error_count} errors.")
+                
+                # Mark metadata as applied
+                st.session_state.processing_state["metadata_applied"] = True
             
             # Continue button
             st.write("---")
