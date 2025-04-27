@@ -526,14 +526,17 @@ def _process_batch_extraction(api_client: BoxAPIClient, batch_files: List[Dict],
     items = []
     file_id_map = {}
     for file in batch_files:
-        if file.get("type") == "file" and file.get("id"):
+        # FIX: Check if the item has an 'id' and is NOT a 'folder'
+        # Box API expects 'type': 'file' in the request body, regardless of the actual file type (pdf, docx etc.)
+        if file.get("id") and file.get("type") != "folder":
+             # Always set type to 'file' for the API call
              items.append({"id": file["id"], "type": "file"})
-             file_id_map[file["id"]] = file["name"]
+             file_id_map[file["id"]] = file.get("name", f"ID: {file['id']}") # Use get for name too
         else:
-             logger.warning(f"Skipping invalid item in batch: {file}")
+             logger.warning(f"Skipping invalid or non-file item in batch: {file}")
 
     if not items:
-        logger.warning("Empty batch, skipping API call.")
+        logger.warning("Empty batch after filtering, skipping API call.")
         return {}, {}
 
     extraction_method = config.get("extraction_method", "freeform")
