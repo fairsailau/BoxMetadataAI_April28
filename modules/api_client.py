@@ -505,7 +505,8 @@ class BoxAPIClient:
             # Prepare update payload (RFC 6902 JSON Patch)
             update_payload = []
             for key, value in metadata.items():
-                update_payload.append({"op": "add", "path": f"/{key}", "value": value})
+                # Ensure value is string for Box API compatibility
+                update_payload.append({"op": "add", "path": f"/{key}", "value": str(value)})
             
             # Use PUT for update with JSON Patch headers
             headers = {'Content-Type': 'application/json-patch+json'}
@@ -556,7 +557,7 @@ class BoxAPIClient:
         
         Args:
             items: List of item dictionaries, e.g., [{'id': 'file_id_1', 'type': 'file'}, ...]
-            template_scope: The scope of the metadata template (e.g., 'enterprise').
+            template_scope: The scope of the metadata template (e.g., 'enterprise_12345').
             template_key: The key of the metadata template.
             ai_model: The AI model to use (default: google__gemini_2_0_flash_001).
             
@@ -572,7 +573,8 @@ class BoxAPIClient:
                 "type": "metadata_template"
             },
             "ai_agent": {
-                "type": "ai_agent_extract_structured",
+                # FIX: Changed type according to documentation example
+                "type": "ai_agent_extract", 
                 "basic_text": {
                     "model": ai_model
                 }
@@ -580,4 +582,5 @@ class BoxAPIClient:
         }
         logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope}.{template_key}.")
         return self.call_api(endpoint, method="POST", data=data)
+
 
