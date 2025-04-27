@@ -9,6 +9,7 @@ import time
 import logging
 import json
 import threading
+import random
 from typing import Dict, Any, Optional, Union, List, Tuple
 
 # Configure logging
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class BoxAPIClient:
     """
     Centralized client for Box API interactions with consistent error handling,
-    authentication management, and request formatting.
+    authentication management, request formatting, and optimization features.
     """
     
     def __init__(self, client):
@@ -50,6 +51,10 @@ class BoxAPIClient:
             'endpoints': {}
         }
         self.metrics_lock = threading.RLock()
+        
+        # Initialize template schema cache
+        self.template_cache = {}
+        self.template_cache_lock = threading.RLock()
     
     def get_access_token(self) -> str:
         """
@@ -65,7 +70,15 @@ class BoxAPIClient:
                 elif hasattr(self.client, 'auth') and hasattr(self.client.auth, 'access_token'):
                     self._access_token = self.client.auth.access_token
                 else:
-                    raise ValueError("Could not retrieve access token from Box client")
+                    # Attempt to refresh if possible
+                    try:
+                        refreshed = self.client.auth.refresh(None)
+                        if refreshed:
+                            self._access_token = self.client.auth.access_token
+                        else:
+                             raise ValueError("Could not retrieve or refresh access token from Box client")
+                    except Exception as e:
+                         raise ValueError(f"Could not retrieve access token from Box client: {e}")
             
             return self._access_token
     
@@ -76,6 +89,14 @@ class BoxAPIClient:
         """
         with self._token_lock:
             self._access_token = None
+            # Optionally, trigger SDK refresh immediately
+            try:
+                if hasattr(self.client, 'auth') and hasattr(self.client.auth, 'refresh'):
+                    self.client.auth.refresh(None)
+                    logger.info("Box SDK token refreshed.")
+            except Exception as e:
+                logger.error(f"Error refreshing Box SDK token: {e}")
+
     
     def call_api(self, 
                 endpoint: str, 
@@ -85,8 +106,8 @@ class BoxAPIClient:
                 headers: Optional[Dict[str, str]] = None,
                 files: Optional[Dict[str, Any]] = None,
                 max_retries: int = 3,
-                retry_codes: List[int] = [429, 500, 502, 503, 504],
-                timeout: int = 60) -> Dict[str, Any]:
+                retry_codes: List[int] = [401, 429, 500, 502, 503, 504],
+                timeout: int = 120) -> Dict[str, Any]: # Increased timeout for AI calls
         """
         Make an API call to the Box API with consistent error handling and retries.
         
@@ -116,7 +137,9 @@ class BoxAPIClient:
         
         # Start metrics tracking
         start_time = time.time()
-        endpoint_key = endpoint.split('?')[0].split('/')[0]  # Extract base endpoint
+        # Extract base endpoint for metrics (e.g., 'files', 'ai')
+        endpoint_parts = endpoint.split('/')
+        endpoint_key = endpoint_parts[0] if endpoint_parts else endpoint
         retries = 0
         
         try:
@@ -136,6 +159,9 @@ class BoxAPIClient:
                         if files:
                             # Don't JSON-encode if sending files
                             json_data = None
+                            # Remove Content-Type if sending files, let requests set it
+                            if 'Content-Type' in request_headers and 'multipart/form-data' not in request_headers['Content-Type']:
+                                del request_headers['Content-Type']
                         else:
                             json_data = data
                         
@@ -145,6 +171,7 @@ class BoxAPIClient:
                             headers=request_headers,
                             params=params,
                             json=json_data,
+                            data=data if files else None, # Use data for form-encoded if needed, json otherwise
                             files=files,
                             timeout=timeout
                         )
@@ -154,9 +181,13 @@ class BoxAPIClient:
                     
                     # Parse response
                     if response.content:
-                        result = response.json()
+                        try:
+                            result = response.json()
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to decode JSON response from {method} {url}")
+                            result = {"error": "Invalid JSON response", "status_code": response.status_code, "content": response.text}
                     else:
-                        result = {"success": True}
+                        result = {"success": True, "status_code": response.status_code}
                     
                     # Update metrics for success
                     self._update_metrics(endpoint_key, True, time.time() - start_time, retries)
@@ -171,12 +202,12 @@ class BoxAPIClient:
                         retries += 1
                         
                         # Calculate backoff time with exponential backoff and jitter
-                        backoff = min(2 ** retries, 60)  # Cap at 60 seconds
-                        jitter = 0.1 * backoff * (2 * random.random() - 1)  # ±10% jitter
+                        backoff = min(1 * (2 ** retries), 60)  # Start with 1s, cap at 60s
+                        jitter = random.uniform(0, 0.1 * backoff) # Add positive jitter up to 10%
                         sleep_time = backoff + jitter
                         
                         logger.warning(
-                            f"API request failed with status {status_code}, "
+                            f"API request {method} {url} failed with status {status_code}, "
                             f"retrying in {sleep_time:.2f}s (attempt {retries}/{max_retries})"
                         )
                         
@@ -184,22 +215,25 @@ class BoxAPIClient:
                         if status_code == 401:
                             logger.info("Access token may have expired, refreshing")
                             self.refresh_token()
+                            # Update header for next retry
                             request_headers['Authorization'] = f'Bearer {self.get_access_token()}'
                         
                         time.sleep(sleep_time)
                         continue
                     
                     # No more retries or non-retryable status
-                    logger.error(f"API request failed: {str(e)}")
+                    logger.error(f"API request {method} {url} failed after {retries} retries: {str(e)}")
                     
                     # Try to parse error response
-                    error_data = {"error": str(e)}
+                    error_data = {"error": str(e), "status_code": status_code}
                     try:
                         error_json = e.response.json()
                         if isinstance(error_json, dict):
                             error_data.update(error_json)
-                    except:
-                        pass
+                        else:
+                            error_data["response_text"] = e.response.text
+                    except json.JSONDecodeError:
+                         error_data["response_text"] = e.response.text
                     
                     # Update metrics for failure
                     self._update_metrics(endpoint_key, False, time.time() - start_time, retries)
@@ -214,12 +248,12 @@ class BoxAPIClient:
                         retries += 1
                         
                         # Calculate backoff time
-                        backoff = min(2 ** retries, 60)
-                        jitter = 0.1 * backoff * (2 * random.random() - 1)
+                        backoff = min(1 * (2 ** retries), 60)
+                        jitter = random.uniform(0, 0.1 * backoff)
                         sleep_time = backoff + jitter
                         
                         logger.warning(
-                            f"Network error: {str(e)}, "
+                            f"Network error on {method} {url}: {str(e)}, "
                             f"retrying in {sleep_time:.2f}s (attempt {retries}/{max_retries})"
                         )
                         
@@ -227,7 +261,7 @@ class BoxAPIClient:
                         continue
                     
                     # No more retries
-                    logger.error(f"Network error after {max_retries} retries: {str(e)}")
+                    logger.error(f"Network error on {method} {url} after {max_retries} retries: {str(e)}")
                     
                     # Update metrics for failure
                     self._update_metrics(endpoint_key, False, time.time() - start_time, retries)
@@ -236,7 +270,7 @@ class BoxAPIClient:
         
         except Exception as e:
             # Unexpected errors
-            logger.exception(f"Unexpected error in API call: {str(e)}")
+            logger.exception(f"Unexpected error in API call {method} {url}: {str(e)}")
             
             # Update metrics for failure
             self._update_metrics(endpoint_key, False, time.time() - start_time, retries)
@@ -248,7 +282,7 @@ class BoxAPIClient:
         Update API metrics.
         
         Args:
-            endpoint: API endpoint
+            endpoint: API endpoint key (e.g., 'files', 'ai')
             success: Whether the call was successful
             duration: Call duration in seconds
             retries: Number of retries performed
@@ -335,7 +369,7 @@ class BoxAPIClient:
                 'endpoints': {}
             }
     
-    # Convenience methods for common API operations
+    # --- Convenience methods for common API operations --- 
     
     def get_file_info(self, file_id: str, fields: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -393,19 +427,43 @@ class BoxAPIClient:
         """
         return self.call_api(f"metadata_templates/{scope}")
     
-    def get_metadata_template(self, scope: str, template: str) -> Dict[str, Any]:
+    def get_metadata_template_schema(self, scope: str, template_key: str, use_cache: bool = True) -> Dict[str, Any]:
         """
-        Get a specific metadata template.
+        Get a specific metadata template schema, using cache if enabled.
         
         Args:
             scope: Template scope (enterprise or global)
-            template: Template key
+            template_key: Template key
+            use_cache: Whether to use the cache (default: True)
             
         Returns:
-            dict: Metadata template
+            dict: Metadata template schema
         """
-        return self.call_api(f"metadata_templates/{scope}/{template}/schema")
-    
+        cache_key = f"{scope}_{template_key}"
+        
+        if use_cache:
+            with self.template_cache_lock:
+                if cache_key in self.template_cache:
+                    logger.info(f"Using cached schema for template: {cache_key}")
+                    return self.template_cache[cache_key]
+        
+        # Fetch from API if not in cache or cache disabled
+        logger.info(f"Fetching schema for template from API: {cache_key}")
+        schema = self.call_api(f"metadata_templates/{scope}/{template_key}/schema")
+        
+        # Store in cache if successful and caching enabled
+        if use_cache and 'error' not in schema:
+            with self.template_cache_lock:
+                self.template_cache[cache_key] = schema
+                
+        return schema
+
+    def clear_template_cache(self) -> None:
+        """Clear the metadata template schema cache."""
+        with self.template_cache_lock:
+            self.template_cache = {}
+            logger.info("Metadata template schema cache cleared.")
+
     def get_file_metadata(self, file_id: str, scope: str, template: str) -> Dict[str, Any]:
         """
         Get file metadata.
@@ -423,99 +481,103 @@ class BoxAPIClient:
     def apply_metadata(self, 
                       file_id: str, 
                       metadata: Dict[str, Any], 
-                      scope: str = "enterprise", 
-                      template: str = "default") -> Dict[str, Any]:
+                      scope: str, 
+                      template_key: str) -> Dict[str, Any]:
         """
-        Apply metadata to a file.
+        Apply metadata to a file (create or update).
         
         Args:
             file_id: Box file ID
-            metadata: Metadata to apply
+            metadata: Metadata key-value pairs to apply
             scope: Metadata scope (enterprise or global)
-            template: Template key
+            template_key: Template key
             
         Returns:
-            dict: Applied metadata
+            dict: API response
         """
-        return self.call_api(
-            f"files/{file_id}/metadata/{scope}/{template}",
-            method="POST",
-            data=metadata
-        )
-    
-    def update_metadata(self, 
-                       file_id: str, 
-                       operations: List[Dict[str, Any]], 
-                       scope: str = "enterprise", 
-                       template: str = "default") -> Dict[str, Any]:
-        """
-        Update file metadata using operations.
+        endpoint = f"files/{file_id}/metadata/{scope}/{template_key}"
         
-        Args:
-            file_id: Box file ID
-            operations: List of operations to perform
-            scope: Metadata scope (enterprise or global)
-            template: Template key
+        # Try to create first
+        create_response = self.call_api(endpoint, method="POST", data=metadata, retry_codes=[429, 500, 502, 503, 504]) # Don't retry on 409 Conflict
+        
+        if 'error' in create_response and create_response.get('status_code') == 409: # Conflict means metadata exists
+            logger.info(f"Metadata already exists for file {file_id}, attempting update.")
+            # Prepare update payload (RFC 6902 JSON Patch)
+            update_payload = []
+            for key, value in metadata.items():
+                update_payload.append({"op": "add", "path": f"/{key}", "value": value})
             
-        Returns:
-            dict: Updated metadata
-        """
-        return self.call_api(
-            f"files/{file_id}/metadata/{scope}/{template}",
-            method="PUT",
-            data=operations
-        )
-    
-    def extract_metadata_ai(self, 
-                          file_id: str, 
-                          prompt: str = None, 
-                          fields: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Extract metadata using Box AI.
-        
-        Args:
-            file_id: Box file ID
-            prompt: Extraction prompt for freeform extraction
-            fields: Field definitions for structured extraction
-            
-        Returns:
-            dict: Extracted metadata
-        """
-        data = {}
-        
-        if prompt:
-            # Freeform extraction
-            data = {
-                "mode": "freeform",
-                "prompt": prompt
-            }
-        elif fields:
-            # Structured extraction
-            data = {
-                "mode": "structured",
-                "fields": fields
-            }
+            # Use PUT for update with JSON Patch headers
+            headers = {'Content-Type': 'application/json-patch+json'}
+            update_response = self.call_api(endpoint, method="PUT", data=update_payload, headers=headers)
+            return update_response
         else:
-            raise ValueError("Either prompt or fields must be provided")
-        
-        return self.call_api(
-            f"ai/extract/files/{file_id}/metadata",
-            method="POST",
-            data=data
-        )
-    
-    def batch_request(self, requests: List[Dict[str, Any]]) -> Dict[str, Any]:
+            # Return the create response (success or other error)
+            return create_response
+
+    # --- NEW Batch AI Extraction Methods --- 
+
+    def batch_extract_metadata_freeform(self, 
+                                       items: List[Dict[str, str]], 
+                                       prompt: str, 
+                                       ai_model: str = "google__gemini_2_0_flash_001") -> Dict[str, Any]:
         """
-        Make a batch request.
+        Perform batch freeform metadata extraction using Box AI.
         
         Args:
-            requests: List of request objects
+            items: List of item dictionaries, e.g., [{'id': 'file_id_1', 'type': 'file'}, ...]
+            prompt: The prompt for the AI model.
+            ai_model: The AI model to use (default: google__gemini_2_0_flash_001).
             
         Returns:
-            dict: Batch response
+            dict: API response containing batch results or error.
         """
-        data = {"requests": requests}
-        return self.call_api("batch", method="POST", data=data)
+        endpoint = "ai/extract"
+        data = {
+            "items": items,
+            "prompt": prompt,
+            "ai_agent": {
+                "type": "ai_agent_extract",
+                "basic_text": {
+                    "model": ai_model
+                }
+            }
+        }
+        logger.info(f"Calling batch freeform extraction for {len(items)} items.")
+        return self.call_api(endpoint, method="POST", data=data)
 
-# Add missing import
-import random
+    def batch_extract_metadata_structured(self, 
+                                         items: List[Dict[str, str]], 
+                                         template_scope: str, 
+                                         template_key: str, 
+                                         ai_model: str = "google__gemini_2_0_flash_001") -> Dict[str, Any]:
+        """
+        Perform batch structured metadata extraction using Box AI.
+        
+        Args:
+            items: List of item dictionaries, e.g., [{'id': 'file_id_1', 'type': 'file'}, ...]
+            template_scope: The scope of the metadata template (e.g., 'enterprise').
+            template_key: The key of the metadata template.
+            ai_model: The AI model to use (default: google__gemini_2_0_flash_001).
+            
+        Returns:
+            dict: API response containing batch results or error.
+        """
+        endpoint = "ai/extract_structured"
+        data = {
+            "items": items,
+            "metadata_template": {
+                "template_key": template_key,
+                "scope": template_scope,
+                "type": "metadata_template"
+            },
+            "ai_agent": {
+                "type": "ai_agent_extract_structured",
+                "basic_text": {
+                    "model": ai_model
+                }
+            }
+        }
+        logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope}.{template_key}.")
+        return self.call_api(endpoint, method="POST", data=data)
+

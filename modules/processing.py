@@ -7,6 +7,7 @@ import seaborn as sns
 from typing import List, Dict, Any
 import json
 import concurrent.futures
+from modules.api_client import BoxAPIClient # Assuming api_client is in the same directory
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -50,12 +51,22 @@ def process_files():
                 st.rerun()
             return
         
-        if "metadata_config" not in st.session_state or (
-            st.session_state.metadata_config["extraction_method"] == "structured" and 
-            not st.session_state.metadata_config["use_template"] and 
-            not st.session_state.metadata_config["custom_fields"]
-        ):
-            st.warning("Metadata configuration is incomplete. Please configure metadata extraction parameters.")
+        # Ensure metadata_config exists and is minimally valid
+        if "metadata_config" not in st.session_state:
+             st.session_state.metadata_config = {
+                 "extraction_method": "freeform", # Default
+                 "freeform_prompt": "Extract key details.", # Default
+                 "ai_model": "google__gemini_2_0_flash_001", # Default
+                 "batch_size": 5, # Default
+                 "use_template": False,
+                 "template_id": None,
+                 "custom_fields": []
+             }
+
+        if st.session_state.metadata_config["extraction_method"] == "structured" and \
+           not st.session_state.metadata_config.get("use_template") and \
+           not st.session_state.metadata_config.get("custom_fields"):
+            st.warning("Structured metadata configuration is incomplete. Please configure a template or custom fields.")
             if st.button("Go to Metadata Configuration", key="go_to_metadata_config_button"):
                 st.session_state.current_page = "Metadata Configuration"
                 st.rerun()
@@ -67,8 +78,8 @@ def process_files():
                 "is_processing": False,
                 "processed_files": 0,
                 "total_files": len(st.session_state.selected_files),
-                "current_file_index": -1,
-                "current_file": "",
+                "current_batch": 0,
+                "total_batches": 0,
                 "results": {},
                 "errors": {},
                 "retries": {},
@@ -85,45 +96,44 @@ def process_files():
             col1, col2 = st.columns(2)
             
             with col1:
-                # Batch size control
+                # Batch size control (Max 50 for Box AI batch endpoints)
                 batch_size = st.number_input(
-                    "Batch Size",
+                    "Batch Size (Max 50)",
                     min_value=1,
-                    max_value=50,
-                    value=st.session_state.metadata_config.get("batch_size", 5),
+                    max_value=50, # Box AI batch limit
+                    value=st.session_state.metadata_config.get("batch_size", 10),
                     key="batch_size_input"
                 )
                 st.session_state.metadata_config["batch_size"] = batch_size
                 
-                # Max retries control
-                max_retries = st.number_input(
-                    "Max Retries",
-                    min_value=0,
-                    max_value=10,
-                    value=st.session_state.processing_state.get("max_retries", 3),
-                    key="max_retries_input"
+                # Template caching control
+                use_template_cache = st.checkbox(
+                    "Use Template Schema Cache",
+                    value=True,
+                    help="Cache template schemas to reduce API calls",
+                    key="use_template_cache_checkbox"
                 )
-                st.session_state.processing_state["max_retries"] = max_retries
+                st.session_state.metadata_config["use_template_cache"] = use_template_cache
             
             with col2:
-                # Retry delay control
-                retry_delay = st.number_input(
-                    "Retry Delay (seconds)",
-                    min_value=1,
-                    max_value=30,
-                    value=st.session_state.processing_state.get("retry_delay", 2),
-                    key="retry_delay_input"
-                )
-                st.session_state.processing_state["retry_delay"] = retry_delay
-                
-                # Processing mode
+                # Processing mode (Parallel for batches)
                 processing_mode = st.selectbox(
                     "Processing Mode",
-                    options=["Sequential", "Parallel"],
-                    index=0,
+                    options=["Sequential", "Parallel"], # Controls batch submission
+                    index=1, # Default to Parallel
                     key="processing_mode_input"
                 )
                 st.session_state.processing_state["processing_mode"] = processing_mode
+                max_workers = st.number_input(
+                    "Max Parallel Workers",
+                    min_value=1,
+                    max_value=10,
+                    value=5,
+                    key="max_workers_input",
+                    help="Number of batches to process concurrently in Parallel mode."
+                )
+                st.session_state.processing_state["max_workers"] = max_workers
+
         
         # Auto-apply metadata option
         auto_apply_metadata = st.checkbox(
@@ -134,7 +144,7 @@ def process_files():
         )
         st.session_state.processing_state["auto_apply_metadata"] = auto_apply_metadata
         
-        # Template management
+        # Template management (No changes needed here)
         with st.expander("Metadata Template Management"):
             st.write("#### Save Current Configuration as Template")
             template_name = st.text_input("Template Name", key="template_name_input")
@@ -157,33 +167,59 @@ def process_files():
                 
                 if st.button("Load Template", key="load_template_button"):
                     st.session_state.metadata_config = st.session_state.metadata_templates[selected_template].copy()
+                    # Update batch size from loaded template if present
+                    batch_size = st.session_state.metadata_config.get("batch_size", 10)
                     st.success(f"Template '{selected_template}' loaded successfully!")
+                    st.rerun() # Rerun to reflect loaded config in UI
             else:
                 st.info("No saved templates yet")
         
-        # Display configuration summary
+        # Display configuration summary (No changes needed here)
         with st.expander("Configuration Summary"):
             st.write("#### Extraction Method")
-            st.write(f"Method: {st.session_state.metadata_config['extraction_method'].capitalize()}")
+            st.write(f"Method: {st.session_state.metadata_config.get('extraction_method', 'freeform').capitalize()}")
             
-            if st.session_state.metadata_config["extraction_method"] == "structured":
-                if st.session_state.metadata_config["use_template"]:
-                    st.write(f"Using template: Template ID {st.session_state.metadata_config['template_id']}")
-                else:
+            if st.session_state.metadata_config.get("extraction_method") == "structured":
+                if st.session_state.metadata_config.get("use_template"):
+                    st.write(f"Using template: Template ID {st.session_state.metadata_config.get('template_id')}")
+                elif st.session_state.metadata_config.get("custom_fields"):
                     st.write(f"Using {len(st.session_state.metadata_config['custom_fields'])} custom fields")
                     for i, field in enumerate(st.session_state.metadata_config['custom_fields']):
                         st.write(f"- {field.get('display_name', field.get('name', ''))} ({field.get('type', 'string')})")
-            else:
+                else:
+                     st.warning("Structured method selected but no template or custom fields configured.")
+            else: # Freeform
                 st.write("Freeform prompt:")
-                st.write(f"> {st.session_state.metadata_config['freeform_prompt']}")
+                st.write(f"> {st.session_state.metadata_config.get('freeform_prompt')}")
             
-            st.write(f"AI Model: {st.session_state.metadata_config['ai_model']}")
-            st.write(f"Batch Size: {st.session_state.metadata_config['batch_size']}")
+            st.write(f"AI Model: {st.session_state.metadata_config.get('ai_model')}")
+            st.write(f"Batch Size: {st.session_state.metadata_config.get('batch_size')}")
+            st.write(f"Template Caching: {'Enabled' if st.session_state.metadata_config.get('use_template_cache', True) else 'Disabled'}")
+            st.write(f"Processing Mode: {st.session_state.processing_state.get('processing_mode', 'Parallel')}")
+            if st.session_state.processing_state.get("processing_mode") == "Parallel":
+                 st.write(f"Max Parallel Workers: {st.session_state.processing_state.get('max_workers', 5)}")
+
         
-        # Display selected files
+        # Display selected files (No changes needed here)
         with st.expander("Selected Files"):
             for file in st.session_state.selected_files:
                 st.write(f"- {file['name']} (Type: {file['type']})")
+        
+        # Template cache management
+        with st.expander("Template Cache Management"):
+            st.write("#### Template Schema Cache")
+            
+            # Get API client instance for cache operations
+            api_client = BoxAPIClient(st.session_state.client)
+            
+            # Display cache status
+            cache_size = len(getattr(api_client, 'template_cache', {}))
+            st.write(f"Current cache size: {cache_size} templates")
+            
+            # Clear cache button
+            if st.button("Clear Template Cache", key="clear_template_cache_button"):
+                api_client.clear_template_cache()
+                st.success("Template cache cleared successfully!")
         
         # Process files button
         col1, col2 = st.columns(2)
@@ -191,7 +227,7 @@ def process_files():
         with col1:
             start_button = st.button(
                 "Start Processing",
-                disabled=st.session_state.processing_state["is_processing"],
+                disabled=st.session_state.processing_state.get("is_processing", False),
                 use_container_width=True,
                 key="start_processing_button"
             )
@@ -199,7 +235,7 @@ def process_files():
         with col2:
             cancel_button = st.button(
                 "Cancel Processing",
-                disabled=not st.session_state.processing_state["is_processing"],
+                disabled=not st.session_state.processing_state.get("is_processing", False),
                 use_container_width=True,
                 key="cancel_processing_button"
             )
@@ -210,40 +246,47 @@ def process_files():
         # Process files
         if start_button:
             # Reset processing state
+            total_files_to_process = len(st.session_state.selected_files)
+            total_batches = (total_files_to_process + batch_size - 1) // batch_size
             st.session_state.processing_state = {
                 "is_processing": True,
                 "processed_files": 0,
-                "total_files": len(st.session_state.selected_files),
-                "current_file_index": -1,
-                "current_file": "",
+                "total_files": total_files_to_process,
+                "current_batch": 0,
+                "total_batches": total_batches,
                 "results": {},
                 "errors": {},
-                "retries": {},
-                "max_retries": max_retries,
-                "retry_delay": retry_delay,
+                # Retries handled by API client
                 "processing_mode": processing_mode,
+                "max_workers": max_workers,
                 "auto_apply_metadata": auto_apply_metadata,
+                "metadata_applied": False, # Reset applied flag
                 "visualization_data": {}
             }
             
             # Reset extraction results
             st.session_state.extraction_results = {}
             
-            # Get metadata extraction functions
-            extraction_functions = get_extraction_functions()
+            # Get API client instance
+            api_client = BoxAPIClient(st.session_state.client)
             
             # Process files with progress tracking
-            process_files_with_progress(
+            process_files_in_batches(
+                api_client,
                 st.session_state.selected_files,
-                extraction_functions,
+                st.session_state.metadata_config,
                 batch_size=batch_size,
-                processing_mode=processing_mode
+                processing_mode=processing_mode,
+                max_workers=max_workers
             )
+            # Note: process_files_in_batches will call st.rerun() internally on completion/error
         
         # Cancel processing
         if cancel_button and st.session_state.processing_state.get("is_processing", False):
             st.session_state.processing_state["is_processing"] = False
-            st.warning("Processing cancelled")
+            # TODO: Implement cancellation mechanism for ongoing futures if parallel
+            st.warning("Processing cancellation requested (may take a moment to stop)...")
+            # We might need a more robust cancellation mechanism, e.g., a flag checked by workers
         
         # Display processing progress
         if st.session_state.processing_state.get("is_processing", False):
@@ -255,7 +298,8 @@ def process_files():
                 # Update progress
                 processed_files = st.session_state.processing_state["processed_files"]
                 total_files = st.session_state.processing_state["total_files"]
-                current_file = st.session_state.processing_state["current_file"]
+                current_batch = st.session_state.processing_state["current_batch"]
+                total_batches = st.session_state.processing_state["total_batches"]
                 
                 # Calculate progress
                 progress = processed_files / total_files if total_files > 0 else 0
@@ -264,125 +308,128 @@ def process_files():
                 progress_bar.progress(progress)
                 
                 # Update status text
-                if current_file:
-                    status_text.text(f"Processing {current_file}... ({processed_files}/{total_files})")
-                else:
-                    status_text.text(f"Processed {processed_files}/{total_files} files")
+                status_text.text(f"Processing Batch {current_batch}/{total_batches}... Processed Files: {processed_files}/{total_files}")
+
         
-        # Display processing results
-        if "results" in st.session_state.processing_state and st.session_state.processing_state["results"]:
+        # Display processing results (after processing is complete)
+        if not st.session_state.processing_state.get("is_processing", False) and \
+           ("results" in st.session_state.processing_state or "errors" in st.session_state.processing_state) and \
+           (st.session_state.processing_state["results"] or st.session_state.processing_state["errors"]):
+            
             st.write("### Processing Results")
             
-            # Display success message
-            processed_files = len(st.session_state.processing_state["results"])
-            error_files = len(st.session_state.processing_state["errors"]) if "errors" in st.session_state.processing_state else 0
+            # Display success/error summary
+            success_files = len(st.session_state.processing_state.get("results", {}))
+            error_files = len(st.session_state.processing_state.get("errors", {}))
+            total_processed = success_files + error_files
             
-            if error_files == 0:
-                st.success(f"Processing complete! Successfully processed {processed_files} files.")
+            if error_files == 0 and total_processed > 0:
+                st.success(f"Extraction complete! Successfully processed {success_files} files.")
+            elif total_processed > 0:
+                st.warning(f"Extraction complete! Successfully processed {success_files} files with {error_files} errors.")
             else:
-                st.warning(f"Processing complete! Successfully processed {processed_files} files with {error_files} errors.")
-            
+                st.info("No files were processed or processing was cancelled.")
+
             # Display errors if any
-            if "errors" in st.session_state.processing_state and st.session_state.processing_state["errors"]:
-                st.write("### Errors")
+            if st.session_state.processing_state.get("errors"):
+                st.write("### Errors During Extraction")
+                errors_df_data = []
+                for file_id, error_info in st.session_state.processing_state["errors"].items():
+                    file_name = next((f["name"] for f in st.session_state.selected_files if f["id"] == file_id), f"ID: {file_id}")
+                    error_message = str(error_info.get("error", error_info)) if isinstance(error_info, dict) else str(error_info)
+                    errors_df_data.append({"File Name": file_name, "File ID": file_id, "Error": error_message})
                 
-                for file_id, error in st.session_state.processing_state["errors"].items():
-                    # Find file name
-                    file_name = ""
-                    for file in st.session_state.selected_files:
-                        if file["id"] == file_id:
-                            file_name = file["name"]
-                            break
-                    
-                    st.error(f"{file_name}: {error}")
+                if errors_df_data:
+                    errors_df = pd.DataFrame(errors_df_data)
+                    st.dataframe(errors_df, use_container_width=True)
             
-            # Auto-apply metadata if enabled
-            if st.session_state.processing_state.get("auto_apply_metadata", False) and not st.session_state.processing_state.get("metadata_applied", False):
+            # Auto-apply metadata if enabled and results exist
+            if st.session_state.processing_state.get("auto_apply_metadata", False) and \
+               not st.session_state.processing_state.get("metadata_applied", False) and \
+               st.session_state.processing_state.get("results"):
+                
                 st.write("### Applying Metadata")
                 st.info("Automatically applying extracted metadata to files...")
                 
                 # Import apply_metadata function
                 from modules.direct_metadata_application_enhanced_fixed import apply_metadata_to_file_direct
                 
-                # Get client
-                client = st.session_state.client
+                # Get API client instance (reuse if possible)
+                api_client = BoxAPIClient(st.session_state.client)
                 
                 # Create a progress bar for metadata application
                 apply_progress_bar = st.progress(0)
                 apply_status_text = st.empty()
                 
                 # Initialize counters
-                success_count = 0
-                error_count = 0
+                apply_success_count = 0
+                apply_error_count = 0
+                apply_errors = {}
                 
-                # Create dictionaries for file mapping
-                file_id_to_metadata = {}
-                file_id_to_file_name = {}
+                # Prepare data for application
+                results_to_apply = st.session_state.processing_state.get("results", {})
+                total_files_to_apply = len(results_to_apply)
+                apply_items = []
+                for file_id, extracted_data in results_to_apply.items():
+                    file_name = next((f["name"] for f in st.session_state.selected_files if f["id"] == file_id), f"ID: {file_id}")
+                    apply_items.append({"file_id": file_id, "file_name": file_name, "metadata": extracted_data})
+
+                # --- Apply metadata (can also be parallelized) ---
+                # Using ThreadPoolExecutor for applying metadata in parallel
+                apply_mode = st.session_state.processing_state.get("processing_mode", "Parallel")
+                max_apply_workers = st.session_state.processing_state.get("max_workers", 5)
                 
-                # Initialize file_id_to_file_name from selected_files
-                for file_info in st.session_state.selected_files:
-                    if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
-                        file_id = str(file_info["id"])
-                        file_id_to_file_name[file_id] = file_info.get("name", f"File {file_id}")
-                
-                # Get results from processing state
-                results_map = st.session_state.processing_state.get("results", {})
-                
-                # Extract metadata for each file
-                for file_id, payload in results_map.items():
-                    # Most APIs put your AI fields under payload["results"]
-                    metadata = payload.get("results", payload)
-                    
-                    # If metadata is a string that looks like JSON, try to parse it
-                    if isinstance(metadata, str):
-                        try:
-                            parsed_metadata = json.loads(metadata)
-                            if isinstance(parsed_metadata, dict):
-                                metadata = parsed_metadata
-                        except json.JSONDecodeError:
-                            # Not valid JSON, keep as is
-                            pass
-                    
-                    # If payload has an "answer" field that's a JSON string, parse it
-                    if isinstance(payload, dict) and "answer" in payload and isinstance(payload["answer"], str):
-                        try:
-                            parsed_answer = json.loads(payload["answer"])
-                            if isinstance(parsed_answer, dict):
-                                metadata = parsed_answer
-                        except json.JSONDecodeError:
-                            # Not valid JSON, keep as is
-                            pass
-                    
-                    file_id_to_metadata[file_id] = metadata
-                
-                # Apply metadata to each file
-                total_files = len(file_id_to_metadata)
-                for i, (file_id, metadata) in enumerate(file_id_to_metadata.items()):
-                    file_name = file_id_to_file_name.get(file_id, "Unknown")
-                    apply_status_text.text(f"Applying metadata to {file_name}... ({i+1}/{total_files})")
-                    
-                    # Apply metadata
-                    result = apply_metadata_to_file_direct(client, file_id, metadata)
-                    
-                    # Update counters
-                    if result["success"]:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                    
-                    # Update progress bar
-                    apply_progress_bar.progress((i + 1) / total_files)
-                
+                if apply_mode == "Parallel" and total_files_to_apply > 1:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_apply_workers) as executor:
+                        future_to_item = {executor.submit(apply_metadata_single, api_client, item): item for item in apply_items}
+                        
+                        for i, future in enumerate(concurrent.futures.as_completed(future_to_item)):
+                            item = future_to_item[future]
+                            file_name = item["file_name"]
+                            apply_status_text.text(f"Applying metadata to {file_name}... ({i+1}/{total_files_to_apply})")
+                            try:
+                                result = future.result()
+                                if result["success"]:
+                                    apply_success_count += 1
+                                else:
+                                    apply_error_count += 1
+                                    apply_errors[item["file_id"]] = result.get("error", "Unknown application error")
+                            except Exception as exc:
+                                logger.error(f"Error applying metadata to {item['file_id']}: {exc}")
+                                apply_error_count += 1
+                                apply_errors[item["file_id"]] = str(exc)
+                            apply_progress_bar.progress((i + 1) / total_files_to_apply)
+                else: # Sequential application
+                     for i, item in enumerate(apply_items):
+                        file_name = item["file_name"]
+                        apply_status_text.text(f"Applying metadata to {file_name}... ({i+1}/{total_files_to_apply})")
+                        result = apply_metadata_single(api_client, item)
+                        if result["success"]:
+                            apply_success_count += 1
+                        else:
+                            apply_error_count += 1
+                            apply_errors[item["file_id"]] = result.get("error", "Unknown application error")
+                        apply_progress_bar.progress((i + 1) / total_files_to_apply)
+
                 # Clear progress indicators
                 apply_progress_bar.empty()
                 apply_status_text.empty()
                 
                 # Display results
-                if error_count == 0:
-                    st.success(f"Successfully applied metadata to all {success_count} files!")
+                if apply_error_count == 0:
+                    st.success(f"Successfully applied metadata to all {apply_success_count} files!")
                 else:
-                    st.warning(f"Applied metadata to {success_count} files with {error_count} errors.")
-                
+                    st.warning(f"Applied metadata to {apply_success_count} files with {apply_error_count} errors.")
+                    # Display application errors
+                    st.write("### Errors During Metadata Application")
+                    apply_errors_df_data = []
+                    for file_id, error_msg in apply_errors.items():
+                        file_name = next((f["name"] for f in st.session_state.selected_files if f["id"] == file_id), f"ID: {file_id}")
+                        apply_errors_df_data.append({"File Name": file_name, "File ID": file_id, "Error": str(error_msg)})
+                    if apply_errors_df_data:
+                        apply_errors_df = pd.DataFrame(apply_errors_df_data)
+                        st.dataframe(apply_errors_df, use_container_width=True)
+
                 # Mark metadata as applied
                 st.session_state.processing_state["metadata_applied"] = True
             
@@ -393,31 +440,288 @@ def process_files():
                 st.rerun()
     
     except Exception as e:
-        st.error(f"Error: {str(e)}")
-        logger.error(f"Error in process_files: {str(e)}")
+        st.error(f"An unexpected error occurred in the processing page: {str(e)}")
+        logger.exception("Error in process_files UI rendering")
 
-# Helper function to extract structured data from API response
+# --- Batch Processing Logic ---
+
+def process_files_in_batches(api_client: BoxAPIClient, files: List[Dict], config: Dict, batch_size: int, processing_mode: str, max_workers: int):
+    """
+    Processes files using batch API calls.
+    Updates st.session_state.processing_state with results and errors.
+    """
+    total_files = len(files)
+    batches = [files[i:i + batch_size] for i in range(0, total_files, batch_size)]
+    total_batches = len(batches)
+    st.session_state.processing_state["total_batches"] = total_batches
+    st.session_state.processing_state["processed_files"] = 0 # Reset count
+    st.session_state.processing_state["current_batch"] = 0 # Reset count
+
+    logger.info(f"Starting batch processing for {total_files} files in {total_batches} batches of size {batch_size}. Mode: {processing_mode}")
+
+    all_results = {}
+    all_errors = {}
+
+    def _update_progress(processed_in_batch=0):
+        st.session_state.processing_state["processed_files"] += processed_in_batch
+        st.session_state.processing_state["current_batch"] += 1
+        # Use a callback or st.experimental_rerun if needed for smoother UI updates
+        # For now, rely on the final rerun
+
+    if processing_mode == "Parallel" and total_batches > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_batch_index = {executor.submit(_process_batch_extraction, api_client, batch, config): i for i, batch in enumerate(batches)}
+            
+            for future in concurrent.futures.as_completed(future_to_batch_index):
+                batch_index = future_to_batch_index[future]
+                batch_files = batches[batch_index]
+                try:
+                    batch_results, batch_errors = future.result()
+                    all_results.update(batch_results)
+                    all_errors.update(batch_errors)
+                    _update_progress(len(batch_files))
+                    logger.info(f"Completed batch {batch_index + 1}/{total_batches}. Success: {len(batch_results)}, Errors: {len(batch_errors)}")
+                except Exception as exc:
+                    logger.error(f"Batch {batch_index + 1} failed entirely: {exc}")
+                    # Mark all files in this batch as errors
+                    for file in batch_files:
+                        all_errors[file["id"]] = f"Batch processing error: {exc}"
+                    _update_progress(len(batch_files))
+    else: # Sequential processing of batches
+        for i, batch in enumerate(batches):
+            if not st.session_state.processing_state.get("is_processing", False):
+                logger.warning("Processing cancelled during sequential batch execution.")
+                break
+            st.session_state.processing_state["current_batch"] = i + 1
+            logger.info(f"Processing batch {i + 1}/{total_batches} sequentially...")
+            try:
+                batch_results, batch_errors = _process_batch_extraction(api_client, batch, config)
+                all_results.update(batch_results)
+                all_errors.update(batch_errors)
+                st.session_state.processing_state["processed_files"] += len(batch)
+                logger.info(f"Completed batch {i + 1}/{total_batches}. Success: {len(batch_results)}, Errors: {len(batch_errors)}")
+            except Exception as exc:
+                logger.error(f"Batch {i + 1} failed entirely: {exc}")
+                for file in batch:
+                    all_errors[file["id"]] = f"Batch processing error: {exc}"
+                st.session_state.processing_state["processed_files"] += len(batch)
+
+    # Update final state
+    st.session_state.processing_state["results"] = all_results
+    st.session_state.processing_state["errors"] = all_errors
+    st.session_state.processing_state["is_processing"] = False
+    st.session_state.extraction_results = all_results # Update main results store
+    logger.info(f"Batch processing finished. Total Success: {len(all_results)}, Total Errors: {len(all_errors)}")
+    st.rerun() # Rerun UI to show final results
+
+def _process_batch_extraction(api_client: BoxAPIClient, batch_files: List[Dict], config: Dict) -> tuple:
+    """
+    Processes a single batch of files using the appropriate Box AI batch API.
+    
+    Returns:
+        tuple: (batch_results, batch_errors)
+    """
+    batch_results = {}
+    batch_errors = {}
+    items = []
+    file_id_map = {}
+    for file in batch_files:
+        if file.get("type") == "file" and file.get("id"):
+             items.append({"id": file["id"], "type": "file"})
+             file_id_map[file["id"]] = file["name"]
+        else:
+             logger.warning(f"Skipping invalid item in batch: {file}")
+
+    if not items:
+        logger.warning("Empty batch, skipping API call.")
+        return {}, {}
+
+    extraction_method = config.get("extraction_method", "freeform")
+    ai_model = config.get("ai_model", "google__gemini_2_0_flash_001")
+    use_template_cache = config.get("use_template_cache", True)
+    api_response = None
+
+    try:
+        if extraction_method == "structured":
+            if config.get("use_template") and config.get("template_id"):
+                template_id = config["template_id"]
+                # Parse template ID (assuming format scope_id_templateKey)
+                parts = template_id.split("_")
+                scope = parts[0]
+                enterprise_id = parts[1] if len(parts) > 1 else ""
+                template_key = parts[-1] if len(parts) > 2 else template_id
+                # Use the actual scope (e.g., enterprise_12345) for the API call
+                template_scope_for_api = f"{scope}_{enterprise_id}" if enterprise_id else scope
+                
+                # Fetch schema once (API client handles caching)
+                schema_response = api_client.get_metadata_template_schema(
+                    scope=template_scope_for_api, 
+                    template_key=template_key,
+                    use_cache=use_template_cache
+                )
+                
+                if "error" in schema_response:
+                     raise ValueError(f"Failed to get template schema for {template_id}: {schema_response['error']}")
+                
+                logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope_for_api}.{template_key}")
+                api_response = api_client.batch_extract_metadata_structured(
+                    items=items,
+                    template_scope=template_scope_for_api,
+                    template_key=template_key,
+                    ai_model=ai_model
+                )
+            # Note: Batch extraction based on custom fields is not directly supported by Box AI API AFAIK.
+            # Need to fall back to individual calls or use template-based for batch.
+            # For now, raise error if structured without template is chosen for batch.
+            elif config.get("custom_fields"):
+                 raise NotImplementedError("Batch extraction with custom fields is not supported. Please use a template or freeform extraction.")
+            else:
+                 raise ValueError("Structured extraction selected but no template ID provided in config.")
+        else: # Freeform
+            prompt = config.get("freeform_prompt", "Extract key details.")
+            logger.info(f"Calling batch freeform extraction for {len(items)} items.")
+            api_response = api_client.batch_extract_metadata_freeform(
+                items=items,
+                prompt=prompt,
+                ai_model=ai_model
+            )
+
+        # Process the batch response
+        if not api_response or "error" in api_response:
+            error_msg = api_response.get("error", "Unknown API error during batch extraction") if isinstance(api_response, dict) else "Invalid API response"
+            logger.error(f"Batch extraction API call failed: {error_msg}")
+            # Mark all files in this batch as errors
+            for item in items:
+                batch_errors[item["id"]] = error_msg
+        elif "entries" in api_response and isinstance(api_response["entries"], list):
+            # Successful batch response
+            for entry in api_response["entries"]:
+                file_id = entry.get("item", {}).get("id")
+                if not file_id:
+                    logger.warning(f"Skipping entry with missing item ID: {entry}")
+                    continue
+                
+                if entry.get("status") == "error":
+                    error_detail = entry.get("error", "Unknown error for this item in batch")
+                    logger.warning(f"Error processing file ID {file_id} in batch: {error_detail}")
+                    batch_errors[file_id] = error_detail
+                elif entry.get("status") == "success":
+                    # Extract the actual metadata payload
+                    metadata = entry.get("answer", {}) # Structured often in answer
+                    if not metadata and isinstance(entry.get("results"), dict):
+                         metadata = entry["results"] # Freeform might be here
+                    elif not metadata and isinstance(entry.get("results"), str): # Handle JSON string case
+                         try:
+                              parsed_results = json.loads(entry["results"])
+                              if isinstance(parsed_results, dict):
+                                   metadata = parsed_results
+                         except json.JSONDecodeError:
+                              metadata = {"extracted_text": entry["results"]} # Fallback
+                    elif not metadata:
+                         metadata = entry # Fallback to whole entry if no clear payload
+
+                    # Apply feedback if available (still relevant per file)
+                    feedback_key = f"{file_id}_{extraction_method}"
+                    if feedback_key in st.session_state.get("feedback_data", {}):
+                        feedback = st.session_state.feedback_data[feedback_key]
+                        logger.info(f"Applying feedback data for file: {file_id_map.get(file_id, file_id)}")
+                        if isinstance(metadata, dict):
+                             metadata.update(feedback) # Merge feedback, prioritizing feedback
+                        else:
+                             metadata = feedback # Overwrite if original wasn't dict
+
+                    batch_results[file_id] = metadata
+                else:
+                    logger.warning(f"Unknown status for file ID {file_id} in batch: {entry.get('status')}")
+                    batch_errors[file_id] = f"Unknown status: {entry.get('status')}"
+        else:
+            logger.error(f"Unexpected batch API response format: {api_response}")
+            for item in items:
+                batch_errors[item["id"]] = "Unexpected API response format"
+
+    except Exception as e:
+        logger.exception(f"Error processing batch: {e}")
+        # Mark all files in this batch as errors
+        for item in items:
+            batch_errors[item["id"]] = f"Error during batch processing: {e}"
+            
+    return batch_results, batch_errors
+
+# --- Helper for applying metadata (can be parallelized) ---
+def apply_metadata_single(api_client: BoxAPIClient, item: Dict) -> Dict:
+    """
+    Applies metadata to a single file.
+    Designed to be called in parallel.
+    """
+    file_id = item["file_id"]
+    metadata = item["metadata"]
+    
+    # Determine template scope/key (assuming it's consistent or derivable)
+    # This part might need refinement based on how templates are managed/selected
+    template_scope = "enterprise" # Default or get from config/context
+    template_key = None
+    if st.session_state.metadata_config.get("extraction_method") == "structured" and \
+       st.session_state.metadata_config.get("use_template") and \
+       st.session_state.metadata_config.get("template_id"):
+        
+        template_id = st.session_state.metadata_config["template_id"]
+        parts = template_id.split("_")
+        scope_part = parts[0]
+        enterprise_id = parts[1] if len(parts) > 1 else ""
+        template_key = parts[-1] if len(parts) > 2 else template_id
+        template_scope = f"{scope_part}_{enterprise_id}" if enterprise_id else scope_part
+
+    if not template_key:
+         logger.warning(f"Cannot apply metadata for file {file_id}: Template key not determined.")
+         return {"success": False, "error": "Template key not determined for application"}
+
+    # Clean metadata - Box API often expects string values
+    cleaned_metadata = {}
+    for k, v in metadata.items():
+        # Basic cleaning: convert non-strings/numbers/booleans to string
+        if not isinstance(v, (str, int, float, bool)):
+            cleaned_metadata[k] = str(v)
+        else:
+            cleaned_metadata[k] = v
+            
+    logger.info(f"Applying metadata to file {file_id} using template {template_scope}.{template_key}")
+    result = api_client.apply_metadata(
+        file_id=file_id,
+        metadata=cleaned_metadata,
+        scope=template_scope,
+        template_key=template_key
+    )
+    
+    if "error" in result:
+        logger.error(f"Failed to apply metadata to {file_id}: {result['error']}")
+        return {"success": False, "error": result.get("error", "Failed to apply metadata")}
+    else:
+        logger.info(f"Successfully applied metadata to {file_id}")
+        return {"success": True}
+
+
+# --- Helper function to extract structured data from API response ---
 def extract_structured_data_from_response(response):
     """
     Extract structured data from various possible response structures
+    (Used for parsing results within batch or individual responses)
     
     Args:
-        response (dict): API response
+        response (dict): API response or entry from batch response
         
     Returns:
         dict: Extracted structured data (key-value pairs)
     """
     structured_data = {}
-    extracted_text = ""
     
     # Log the response structure for debugging
-    logger.info(f"Response structure: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
+    # logger.debug(f"Parsing response structure: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
     
     if isinstance(response, dict):
         # Check for answer field (contains structured data in JSON format)
         if "answer" in response and isinstance(response["answer"], dict):
             structured_data = response["answer"]
-            logger.info(f"Found structured data in 'answer' field: {structured_data}")
+            # logger.debug(f"Found structured data in 'answer' field: {structured_data}")
             return structured_data
         
         # Check for answer field as string (JSON string)
@@ -426,351 +730,57 @@ def extract_structured_data_from_response(response):
                 answer_data = json.loads(response["answer"])
                 if isinstance(answer_data, dict):
                     structured_data = answer_data
-                    logger.info(f"Found structured data in 'answer' field (JSON string): {structured_data}")
+                    # logger.debug(f"Found structured data in 'answer' field (JSON string): {structured_data}")
                     return structured_data
             except json.JSONDecodeError:
                 logger.warning(f"Could not parse 'answer' field as JSON: {response['answer']}")
         
-        # Check for key-value pairs directly in response
+        # Check for results field (used in some AI responses)
+        if "results" in response and isinstance(response["results"], dict):
+             structured_data = response["results"]
+             # logger.debug(f"Found structured data in 'results' field: {structured_data}")
+             return structured_data
+        elif "results" in response and isinstance(response["results"], str):
+             try:
+                  results_data = json.loads(response["results"])
+                  if isinstance(results_data, dict):
+                       structured_data = results_data
+                       # logger.debug(f"Found structured data in 'results' field (JSON string): {structured_data}")
+                       return structured_data
+             except json.JSONDecodeError:
+                  logger.warning(f"Could not parse 'results' field as JSON: {response['results']}")
+                  # Fallback: Treat the string as a single value if parsing fails
+                  structured_data = {"extracted_text": response["results"]}
+                  return structured_data
+
+        # Fallback: Check for key-value pairs directly in response (less reliable)
+        # Avoid common metadata keys
+        avoid_keys = ["error", "items", "response", "item_collection", "entries", "type", "id", "sequence_id", "status", "item", "completion_reason"]
+        temp_data = {}
         for key, value in response.items():
-            if key not in ["error", "items", "response", "item_collection", "entries", "type", "id", "sequence_id"]:
-                structured_data[key] = value
-        
-        # Check in response field
-        if "response" in response and isinstance(response["response"], dict):
-            response_obj = response["response"]
-            if "answer" in response_obj and isinstance(response_obj["answer"], dict):
-                structured_data = response_obj["answer"]
-                logger.info(f"Found structured data in 'response.answer' field: {structured_data}")
-                return structured_data
-        
-        # Check in items array
-        if "items" in response and isinstance(response["items"], list) and len(response["items"]) > 0:
-            item = response["items"][0]
-            if isinstance(item, dict):
-                if "answer" in item and isinstance(item["answer"], dict):
-                    structured_data = item["answer"]
-                    logger.info(f"Found structured data in 'items[0].answer' field: {structured_data}")
-                    return structured_data
-    
+            if key not in avoid_keys:
+                temp_data[key] = value
+        if temp_data: # Only use if we found something
+             structured_data = temp_data
+             # logger.debug(f"Found potential structured data directly in response keys: {structured_data}")
+             return structured_data
+
     # If we couldn't find structured data, return empty dict
     if not structured_data:
         logger.warning("Could not find structured data in response")
     
     return structured_data
 
-def process_files_with_progress(files, extraction_functions, batch_size=5, processing_mode="Sequential"):
-    """
-    Process files with progress tracking
-    
-    Args:
-        files: List of files to process
-        extraction_functions: Dictionary of extraction functions
-        batch_size: Number of files to process in parallel
-        processing_mode: Processing mode (Sequential or Parallel)
-    """
-    # Check if already processing
-    if not st.session_state.processing_state.get("is_processing", False):
-        return
-    
-    # Get total files
-    total_files = len(files)
-    st.session_state.processing_state["total_files"] = total_files
-    
-    # Process files
-    if processing_mode == "Parallel":
-        # Process files in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
-            # Submit tasks
-            future_to_file = {}
-            for file in files:
-                future = executor.submit(process_file, file, extraction_functions)
-                future_to_file[future] = file
-            
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(future_to_file):
-                file = future_to_file[future]
-                
-                try:
-                    result = future.result()
-                    
-                    # Update processing state
-                    st.session_state.processing_state["processed_files"] += 1
-                    st.session_state.processing_state["current_file"] = ""
-                    
-                    # Store result
-                    if result["success"]:
-                        st.session_state.processing_state["results"][file["id"]] = result["data"]
-                        st.session_state.extraction_results[file["id"]] = result["data"]
-                    else:
-                        st.session_state.processing_state["errors"][file["id"]] = result["error"]
-                
-                except Exception as e:
-                    # Update processing state
-                    st.session_state.processing_state["processed_files"] += 1
-                    st.session_state.processing_state["current_file"] = ""
-                    
-                    # Store error
-                    st.session_state.processing_state["errors"][file["id"]] = str(e)
-    else:
-        # Process files sequentially
-        for i, file in enumerate(files):
-            # Check if processing was cancelled
-            if not st.session_state.processing_state.get("is_processing", False):
-                break
-            
-            # Update processing state
-            st.session_state.processing_state["current_file_index"] = i
-            st.session_state.processing_state["current_file"] = file["name"]
-            
-            try:
-                # Process file
-                result = process_file(file, extraction_functions)
-                
-                # Update processing state
-                st.session_state.processing_state["processed_files"] += 1
-                
-                # Store result
-                if result["success"]:
-                    st.session_state.processing_state["results"][file["id"]] = result["data"]
-                    st.session_state.extraction_results[file["id"]] = result["data"]
-                else:
-                    st.session_state.processing_state["errors"][file["id"]] = result["error"]
-            
-            except Exception as e:
-                # Update processing state
-                st.session_state.processing_state["processed_files"] += 1
-                
-                # Store error
-                st.session_state.processing_state["errors"][file["id"]] = str(e)
-    
-    # Mark processing as complete
-    st.session_state.processing_state["is_processing"] = False
-    st.session_state.processing_state["current_file"] = ""
-    
-    # Rerun to update UI
-    st.rerun()
-
-def get_document_type_for_file(file_id):
-    """
-    Get document type for a file from categorization results
-    
-    Args:
-        file_id: File ID
-        
-    Returns:
-        str: Document type or None if not categorized
-    """
-    # Check if document categorization has been performed
-    if (
-        hasattr(st.session_state, "document_categorization") and 
-        st.session_state.document_categorization.get("is_categorized", False) and
-        file_id in st.session_state.document_categorization["results"]
-    ):
-        return st.session_state.document_categorization["results"][file_id]["document_type"]
-    
-    return None
-
-def process_file(file, extraction_functions):
-    """
-    Process a single file
-    
-    Args:
-        file: File to process
-        extraction_functions: Dictionary of extraction functions
-        
-    Returns:
-        dict: Processing result
-    """
-    try:
-        file_id = file["id"]
-        file_name = file["name"]
-        
-        logger.info(f"Processing file: {file_name} (ID: {file_id})")
-        
-        # Check if we have feedback data for this file
-        feedback_key = f"{file_id}_{st.session_state.metadata_config['extraction_method']}"
-        has_feedback = feedback_key in st.session_state.feedback_data
-        
-        if has_feedback:
-            logger.info(f"Using feedback data for file: {file_name}")
-        
-        # Get document type for this file (if categorized)
-        document_type = get_document_type_for_file(file_id)
-        if document_type:
-            logger.info(f"File {file_name} has document type: {document_type}")
-        
-        # Determine extraction method
-        if st.session_state.metadata_config["extraction_method"] == "structured":
-            # Structured extraction
-            if st.session_state.metadata_config["use_template"]:
-                # Get template ID based on document type if available
-                template_id = None
-                
-                # Check if we have a document type and a mapping for it
-                if document_type and hasattr(st.session_state, "document_type_to_template"):
-                    mapped_template_id = st.session_state.document_type_to_template.get(document_type)
-                    if mapped_template_id:
-                        template_id = mapped_template_id
-                        logger.info(f"Using document type specific template for {document_type}: {template_id}")
-                
-                # If no document type specific template, use the general one
-                if not template_id:
-                    template_id = st.session_state.metadata_config["template_id"]
-                    logger.info(f"Using general template: {template_id}")
-                
-                # Parse the template ID to extract the correct components
-                # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
-                parts = template_id.split('_')
-                
-                # Extract the scope and enterprise ID
-                scope = parts[0]  # e.g., "enterprise"
-                enterprise_id = parts[1] if len(parts) > 1 else ""
-                
-                # Extract the actual template key (last part)
-                template_key = parts[-1] if len(parts) > 2 else template_id
-                
-                # Create metadata template reference with correct format according to Box API documentation
-                metadata_template = {
-                    "template_key": template_key,
-                    "type": "metadata_template",
-                    "scope": f"{scope}_{enterprise_id}"
-                }
-                
-                logger.info(f"Using template-based extraction with template ID: {template_id}")
-                
-                # Use real API call
-                api_result = extraction_functions["extract_structured_metadata"](
-                    file_id=file_id,
-                    metadata_template=metadata_template,
-                    ai_model=st.session_state.metadata_config["ai_model"]
-                )
-                
-                # Create a clean result object with the extracted data
-                result = {}
-                
-                # Copy fields from API result to our result object
-                if isinstance(api_result, dict):
-                    for key, value in api_result.items():
-                        if key not in ["error", "items", "response"]:
-                            result[key] = value
-                
-                # Apply feedback if available
-                if has_feedback:
-                    feedback = st.session_state.feedback_data[feedback_key]
-                    # Merge feedback with result, prioritizing feedback
-                    for key, value in feedback.items():
-                        result[key] = value
-            else:
-                # Custom fields extraction
-                logger.info(f"Using custom fields extraction with {len(st.session_state.metadata_config['custom_fields'])} fields")
-                
-                # Use real API call
-                api_result = extraction_functions["extract_structured_metadata"](
-                    file_id=file_id,
-                    fields=st.session_state.metadata_config["custom_fields"],
-                    ai_model=st.session_state.metadata_config["ai_model"]
-                )
-                
-                # Create a clean result object with the extracted data
-                result = {}
-                
-                # Copy fields from API result to our result object
-                if isinstance(api_result, dict):
-                    for key, value in api_result.items():
-                        if key not in ["error", "items", "response"]:
-                            result[key] = value
-                
-                # Apply feedback if available
-                if has_feedback:
-                    feedback = st.session_state.feedback_data[feedback_key]
-                    # Merge feedback with result, prioritizing feedback
-                    for key, value in feedback.items():
-                        result[key] = value
-        else:
-            # Freeform extraction
-            # Get prompt based on document type if available
-            prompt = st.session_state.metadata_config["freeform_prompt"]
-            
-            # Check if we have a document type and a specific prompt for it
-            if document_type and "document_type_prompts" in st.session_state.metadata_config:
-                document_type_prompt = st.session_state.metadata_config["document_type_prompts"].get(document_type)
-                if document_type_prompt:
-                    prompt = document_type_prompt
-                    logger.info(f"Using document type specific prompt for {document_type}")
-                else:
-                    logger.info(f"No specific prompt found for document type {document_type}, using general prompt")
-            
-            logger.info(f"Using freeform extraction with prompt: {prompt[:30]}...")
-            
-            # Use real API call
-            api_result = extraction_functions["extract_freeform_metadata"](
-                file_id=file_id,
-                prompt=prompt,
-                ai_model=st.session_state.metadata_config["ai_model"]
-            )
-            
-            # Extract structured data from the API response
-            structured_data = extract_structured_data_from_response(api_result)
-            
-            # Create a clean result object with the structured data
-            result = structured_data
-            
-            # If no structured data was found, include the raw response for debugging
-            if not structured_data and isinstance(api_result, dict):
-                result["_raw_response"] = api_result
-            
-            # Apply feedback if available
-            if has_feedback:
-                feedback = st.session_state.feedback_data[feedback_key]
-                # For freeform, we might have feedback on key-value pairs
-                for key, value in feedback.items():
-                    result[key] = value
-        
-        # Check for errors
-        if isinstance(api_result, dict) and "error" in api_result:
-            logger.error(f"Error processing file {file_name}: {api_result['error']}")
-            return {
-                "success": False,
-                "error": api_result["error"]
-            }
-        
-        logger.info(f"Successfully processed file: {file_name}")
-        return {
-            "success": True,
-            "data": result
-        }
-    
-    except Exception as e:
-        # Log error
-        logger.error(f"Error processing file {file['name']} ({file['id']}): {str(e)}")
-        
-        # Return error
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
+# --- Get Extraction Functions (Placeholder - Adapt if needed) ---
 def get_extraction_functions():
     """
-    Get extraction functions based on configuration
-    
-    Returns:
-        dict: Dictionary of extraction functions
+    Returns a dictionary of extraction functions (placeholder).
+    In the batch implementation, the logic is mostly within _process_batch_extraction.
+    This function might become less relevant or removed.
     """
-    try:
-        # Import metadata extraction function
-        from modules.metadata_extraction import metadata_extraction
-        
-        # Get extraction functions
-        extraction_functions = metadata_extraction()
-        
-        # Return functions
-        return extraction_functions
-    except ImportError as e:
-        logger.error(f"Error importing extraction functions: {str(e)}")
-        st.error(f"Error importing extraction functions: {str(e)}")
-        return {
-            "extract_freeform_metadata": lambda file_id, **kwargs: {"error": "Extraction function not available"},
-            "extract_structured_metadata": lambda file_id, **kwargs: {"error": "Extraction function not available"}
-        }
+    # This function might need to be adapted or removed as the core logic
+    # now resides in _process_batch_extraction which directly uses the api_client.
+    return {
+        # "extract_structured_metadata": api_client.some_structured_method, # Example
+        # "extract_freeform_metadata": api_client.some_freeform_method  # Example
+    }
