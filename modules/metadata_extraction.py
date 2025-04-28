@@ -36,9 +36,9 @@ def metadata_extraction():
             
             # Get access token from client
             access_token = None
-            if hasattr(client, '_oauth'):
+            if hasattr(client, "_oauth"):
                 access_token = client._oauth.access_token
-            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
+            elif hasattr(client, "auth") and hasattr(client.auth, "access_token"):
                 access_token = client.auth.access_token
             
             if not access_token:
@@ -46,8 +46,8 @@ def metadata_extraction():
             
             # Set headers
             headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
             }
             
             # Create AI agent configuration with proper format for structured extraction
@@ -128,8 +128,129 @@ def metadata_extraction():
             # Process the response to extract confidence levels
             processed_response = {}
             
-            # Check if we have entries in the response
-            if "entries" in response_data and len(response_data["entries"]) > 0:
+            # *** REVISED LOGIC TO HANDLE DIFFERENT RESPONSE FORMATS ***
+            if "answer" in response_data and isinstance(response_data["answer"], dict):
+                answer_dict = response_data["answer"]
+                
+                # Check for 'fields' array format FIRST
+                if "fields" in answer_dict and isinstance(answer_dict["fields"], list):
+                    logger.info("Processing 'answer' with 'fields' array format.")
+                    fields_array = answer_dict["fields"]
+                    for field_item in fields_array:
+                        if isinstance(field_item, dict) and "key" in field_item and "value" in field_item:
+                            field_key = field_item["key"]
+                            extracted_value = field_item["value"]
+                            # Get confidence if available, otherwise default to Medium
+                            confidence_level = field_item.get("confidence", "Medium")
+                            
+                            # Validate confidence value
+                            if confidence_level not in ["High", "Medium", "Low"]:
+                                logger.warning(f"Field {field_key}: Unexpected confidence value '{confidence_level}', defaulting to Medium.")
+                                confidence_level = "Medium"
+                                
+                            # Store the extracted value and confidence
+                            processed_response[field_key] = extracted_value
+                            processed_response[f"{field_key}_confidence"] = confidence_level
+                        else:
+                            logger.warning(f"Skipping invalid item in 'fields' array: {field_item}")
+                
+                # Else, process as standard key-value pairs
+                else:
+                    logger.info("Processing 'answer' as standard key-value dictionary.")
+                    for field_key, field_data in answer_dict.items():
+                        # Default values
+                        extracted_value = None
+                        confidence_level = "Medium" # Default if parsing fails or not provided
+
+                        try:
+                            # Check if field_data is a dictionary with 'value' and 'confidence'
+                            if isinstance(field_data, dict) and "value" in field_data and "confidence" in field_data:
+                                extracted_value = field_data["value"]
+                                confidence_level = field_data["confidence"]
+                                
+                                # Validate confidence value
+                                if confidence_level not in ["High", "Medium", "Low"]:
+                                    logger.warning(f"Field {field_key}: Unexpected confidence value '{confidence_level}', defaulting to Medium.")
+                                    confidence_level = "Medium"
+                            
+                            # Handle cases where field_data might be None
+                            elif field_data is None:
+                                logger.info(f"Field {field_key}: Received null value. Setting value to None and confidence to Low.")
+                                extracted_value = None
+                                confidence_level = "Low"
+                            
+                            # Handle cases where field_data is a dict with only 'value'
+                            elif isinstance(field_data, dict) and "value" in field_data and len(field_data) == 1:
+                                logger.warning(f"Field {field_key}: Found dict with only 'value' key: {field_data}. Extracting value directly.")
+                                extracted_value = field_data["value"]
+                                confidence_level = "Medium" # Default confidence as it was missing
+                            
+                            # Otherwise treat the whole field_data as the value
+                            else:
+                                logger.warning(f"Field {field_key}: Unexpected data format: {field_data}. Using raw data as value and Medium confidence.")
+                                extracted_value = field_data # Use the raw data
+                                confidence_level = "Medium"
+
+                            # Store the extracted value and confidence
+                            processed_response[field_key] = extracted_value
+                            processed_response[f"{field_key}_confidence"] = confidence_level
+
+                        except Exception as e:
+                            logger.error(f"Error processing field {field_key} with data '{field_data}': {str(e)}")
+                            processed_response[field_key] = field_data # Store original data on error
+                            processed_response[f"{field_key}_confidence"] = "Low" # Low confidence due to processing error
+            
+            # Handle freeform response format (string in 'answer')
+            elif "answer" in response_data and isinstance(response_data["answer"], str):
+                 logger.info("Processing 'answer' as string (potential freeform JSON).")
+                 response_text = response_data["answer"]
+                 # Try to parse JSON from the text
+                 try:
+                     # Look for JSON-like content in the string
+                     json_start = response_text.find('{')
+                     json_end = response_text.rfind('}') + 1
+                     
+                     if json_start != -1 and json_end > json_start:
+                         json_str = response_text[json_start:json_end]
+                         parsed_json = json.loads(json_str)
+                         
+                         if isinstance(parsed_json, dict):
+                             # Process each field in the parsed JSON
+                             for field_key, field_data in parsed_json.items():
+                                 if isinstance(field_data, dict) and "value" in field_data and "confidence" in field_data:
+                                     # Extract value and confidence
+                                     extracted_value = field_data["value"]
+                                     confidence_level = field_data["confidence"]
+                                     
+                                     # Validate confidence
+                                     if confidence_level not in ["High", "Medium", "Low"]:
+                                         confidence_level = "Medium"
+                                         
+                                     # Store in processed response
+                                     processed_response[field_key] = extracted_value
+                                     processed_response[f"{field_key}_confidence"] = confidence_level
+                                 else:
+                                     # Use the field_data as is with Medium confidence
+                                     processed_response[field_key] = field_data
+                                     processed_response[f"{field_key}_confidence"] = "Medium"
+                         else:
+                             # Not a dictionary, store raw text
+                             logger.warning(f"Parsed JSON from 'answer' string is not a dictionary: {parsed_json}")
+                             processed_response["_raw_response"] = response_text
+                             processed_response["_confidence_processing_failed"] = True
+                     else:
+                         # No JSON found, store raw text
+                         logger.warning("No JSON object found in 'answer' string.")
+                         processed_response["_raw_response"] = response_text
+                         processed_response["_confidence_processing_failed"] = True
+                 except Exception as e:
+                     logger.error(f"Error parsing JSON from answer string: {str(e)}")
+                     processed_response["_raw_response"] = response_text
+                     processed_response["_confidence_processing_failed"] = True
+            
+            # Fall back to entries format if answer is not present (for backward compatibility)
+            elif "entries" in response_data and len(response_data["entries"]) > 0:
+                logger.info("Processing response using fallback 'entries' format.")
                 # Get the first entry (should be our file)
                 entry = response_data["entries"][0]
                 
@@ -187,10 +308,13 @@ def metadata_extraction():
                     logger.warning(f"No 'metadata' field found in the structured API entry: {entry}")
                     processed_response["_error"] = "No 'metadata' field in API entry"
                     processed_response["_confidence_processing_failed"] = True
+            
+            # Original error case if neither 'answer' nor 'entries' is found
             else:
-                logger.warning(f"No 'entries' found in the structured API response: {response_data}")
-                processed_response["_error"] = "No 'entries' in API response"
+                logger.warning(f"Neither 'answer' nor 'entries' field found in the structured API response: {response_data}")
+                processed_response["_error"] = "Neither 'answer' nor 'entries' field in API response"
                 processed_response["_confidence_processing_failed"] = True
+            # *** END OF REVISED LOGIC ***
             
             # Return the processed response
             return processed_response
@@ -218,9 +342,9 @@ def metadata_extraction():
             
             # Get access token from client
             access_token = None
-            if hasattr(client, '_oauth'):
+            if hasattr(client, "_oauth"):
                 access_token = client._oauth.access_token
-            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
+            elif hasattr(client, "auth") and hasattr(client.auth, "access_token"):
                 access_token = client.auth.access_token
             
             if not access_token:
@@ -228,8 +352,8 @@ def metadata_extraction():
             
             # Set headers
             headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
             }
             
             # Enhance the prompt to request confidence levels
@@ -279,12 +403,97 @@ def metadata_extraction():
             # Process the response to extract confidence levels
             processed_response = {}
             
-            # Check if we have entries in the response
-            if "entries" in response_data and len(response_data["entries"]) > 0:
-                # Get the first entry (should be our file)
+            # *** MODIFIED LOGIC TO HANDLE BOTH RESPONSE FORMATS ***
+            # First check for 'answer' field (new format)
+            if "answer" in response_data:
+                if isinstance(response_data["answer"], str):
+                    # Answer is a string, try to parse JSON from it
+                    logger.info("Processing freeform 'answer' as string.")
+                    response_text = response_data["answer"]
+                    parsed_successfully = False
+                    
+                    try:
+                        # Look for JSON-like content in the string
+                        json_start = response_text.find('{')
+                        json_end = response_text.rfind('}') + 1
+                        
+                        if json_start != -1 and json_end > json_start:
+                            json_str = response_text[json_start:json_end]
+                            parsed_json = json.loads(json_str)
+                            
+                            if isinstance(parsed_json, dict):
+                                # Process each field in the parsed JSON
+                                for field_key, field_data in parsed_json.items():
+                                    if isinstance(field_data, dict) and "value" in field_data and "confidence" in field_data:
+                                        # Extract value and confidence
+                                        extracted_value = field_data["value"]
+                                        confidence_level = field_data["confidence"]
+                                        
+                                        # Validate confidence
+                                        if confidence_level not in ["High", "Medium", "Low"]:
+                                            confidence_level = "Medium"
+                                            
+                                        # Store in processed response
+                                        processed_response[field_key] = extracted_value
+                                        processed_response[f"{field_key}_confidence"] = confidence_level
+                                    else:
+                                        # Use the field_data as is with Medium confidence
+                                        processed_response[field_key] = field_data
+                                        processed_response[f"{field_key}_confidence"] = "Medium"
+                                parsed_successfully = True
+                            else:
+                                # Not a dictionary, store raw text
+                                logger.warning(f"Parsed JSON from freeform 'answer' string is not a dictionary: {parsed_json}")
+                        else:
+                            # No JSON found, store raw text
+                            logger.warning(f"No JSON object found in freeform 'answer' string.")
+                            
+                        if not parsed_successfully:
+                            processed_response["_raw_response"] = response_text
+                            processed_response["_confidence_processing_failed"] = True
+                    except Exception as e:
+                        logger.error(f"Error parsing JSON from freeform answer string: {str(e)}")
+                        processed_response["_raw_response"] = response_text
+                        processed_response["_confidence_processing_failed"] = True
+                
+                elif isinstance(response_data["answer"], dict):
+                    # Answer is already a dictionary, process directly (assuming same structure as structured)
+                    logger.info("Processing freeform 'answer' as dictionary.")
+                    for field_key, field_data in response_data["answer"].items():
+                        if isinstance(field_data, dict) and "value" in field_data and "confidence" in field_data:
+                            # Extract value and confidence
+                            extracted_value = field_data["value"]
+                            confidence_level = field_data["confidence"]
+                            
+                            # Validate confidence
+                            if confidence_level not in ["High", "Medium", "Low"]:
+                                confidence_level = "Medium"
+                                
+                            # Store in processed response
+                            processed_response[field_key] = extracted_value
+                            processed_response[f"{field_key}_confidence"] = confidence_level
+                        # Handle dict with only 'value'
+                        elif isinstance(field_data, dict) and "value" in field_data and len(field_data) == 1:
+                            extracted_value = field_data["value"]
+                            confidence_level = "Medium"
+                            processed_response[field_key] = extracted_value
+                            processed_response[f"{field_key}_confidence"] = confidence_level
+                        else:
+                            # Use the field_data as is with Medium confidence
+                            processed_response[field_key] = field_data
+                            processed_response[f"{field_key}_confidence"] = "Medium"
+                else:
+                    logger.warning(f"Unexpected freeform 'answer' format: {response_data['answer']}")
+                    processed_response["_error"] = "Unexpected freeform 'answer' format"
+                    processed_response["_confidence_processing_failed"] = True
+            
+            # Fall back to entries format if answer is not present (for backward compatibility)
+            elif "entries" in response_data and len(response_data["entries"]) > 0:
+                logger.info("Processing freeform response using fallback 'entries' format.")
+                # Get the first entry
                 entry = response_data["entries"][0]
                 
-                # Check if we have a response field (this seems to be the standard for freeform)
+                # Check if we have a response field
                 if "response" in entry:
                     response_text = entry["response"]
                     parsed_successfully = False
@@ -321,17 +530,17 @@ def metadata_extraction():
                                 parsed_successfully = True
                             else:
                                 # Parsed JSON but it's not a dictionary (e.g., a list)
-                                logger.warning(f"Parsed JSON is not a dictionary: {json_str}. Storing raw response.")
+                                logger.warning(f"Parsed JSON from 'entries' response string is not a dictionary: {json_str}. Storing raw response.")
                         else:
                             # No JSON object found in the response text
-                            logger.warning(f"No JSON object found in response text. Storing raw response.")
+                            logger.warning(f"No JSON object found in 'entries' response string. Storing raw response.")
 
                     except json.JSONDecodeError as e:
                         # Failed to parse the potential JSON string
-                        logger.warning(f"Failed to parse JSON from response text: {json_str}. Error: {e}. Storing raw response.")
+                        logger.warning(f"Failed to parse JSON from 'entries' response string. Error: {e}. Storing raw response.")
                     except Exception as e:
                         # General error during parsing
-                        logger.error(f"Error processing freeform response. Error: {e}. Storing raw response.")
+                        logger.error(f"Error processing freeform 'entries' response. Error: {e}. Storing raw response.")
 
                     # If parsing failed or no JSON found, store the raw response text
                     if not parsed_successfully:
@@ -343,9 +552,11 @@ def metadata_extraction():
                     processed_response["_error"] = "No 'response' field in API entry"
                     processed_response["_confidence_processing_failed"] = True
             else:
-                logger.warning(f"No 'entries' found in the freeform API response: {response_data}")
-                processed_response["_error"] = "No 'entries' in API response"
+                # Neither 'answer' nor 'entries' found
+                logger.warning(f"Neither 'answer' nor 'entries' field found in the freeform API response: {response_data}")
+                processed_response["_error"] = "Neither 'answer' nor 'entries' field in API response"
                 processed_response["_confidence_processing_failed"] = True
+            # *** END OF MODIFIED LOGIC ***
             
             # Return the processed response
             return processed_response
