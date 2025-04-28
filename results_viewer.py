@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Dict, List, Any
 import json
 import logging
+import base64
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -117,7 +118,7 @@ def view_results():
             # Check if this is a direct API response with an answer field
             if "answer" in result:
                 answer = result["answer"]
-                logger.info(f"Found \'answer\' field in result: {answer}")
+                logger.info(f"Found 'answer' field in result: {answer}")
                 
                 # Check if answer is a JSON string that needs parsing
                 if isinstance(answer, str):
@@ -130,11 +131,11 @@ def view_results():
                                 if isinstance(value, dict) and "value" in value and "confidence" in value:
                                     processed_result["result_data"][key] = value["value"]
                                     processed_result["confidence_levels"][key] = value["confidence"]
-                                    logger.info(f"Extracted field {key} with value \'{value['value']}\' and confidence \'{value['confidence']}\'")
+                                    logger.info(f"Extracted field {key} with value '{value['value']}' and confidence '{value['confidence']}'")
                                 else:
                                     processed_result["result_data"][key] = value
                                     processed_result["confidence_levels"][key] = "Medium" # Default
-                                    logger.info(f"Field {key} doesn\'t have expected structure, using value \'{value}\' with default Medium confidence")
+                                    logger.info(f"Field {key} doesn't have expected structure, using value '{value}' with default Medium confidence")
                         else:
                             logger.warning(f"Parsed answer is not a dictionary: {parsed_answer}")
                             processed_result["result_data"] = {"extracted_text": answer}
@@ -149,11 +150,11 @@ def view_results():
                         if isinstance(value, dict) and "value" in value and "confidence" in value:
                             processed_result["result_data"][key] = value["value"]
                             processed_result["confidence_levels"][key] = value["confidence"]
-                            logger.info(f"Extracted field {key} with value \'{value['value']}\' and confidence \'{value['confidence']}\'")
+                            logger.info(f"Extracted field {key} with value '{value['value']}' and confidence '{value['confidence']}'")
                         else:
                             processed_result["result_data"][key] = value
                             processed_result["confidence_levels"][key] = "Medium" # Default
-                            logger.info(f"Field {key} doesn\'t have expected structure, using value \'{value}\' with default Medium confidence")
+                            logger.info(f"Field {key} doesn't have expected structure, using value '{value}' with default Medium confidence")
                 else:
                     # Some other format, store as is
                     logger.warning(f"Answer is neither string nor dictionary: {type(answer)}. Using as is.")
@@ -162,10 +163,10 @@ def view_results():
             # Check for items array with answer field (common in Box AI responses)
             elif "items" in result and isinstance(result["items"], list) and len(result["items"]) > 0:
                 item = result["items"][0]
-                logger.info(f"Found \'items\' array in result, processing first item: {item}")
+                logger.info(f"Found 'items' array in result, processing first item: {item}")
                 if isinstance(item, dict) and "answer" in item:
                     answer = item["answer"]
-                    logger.info(f"Found \'answer\' field in item: {answer}")
+                    logger.info(f"Found 'answer' field in item: {answer}")
                     
                     # Check if answer is a JSON string that needs parsing
                     if isinstance(answer, str):
@@ -178,11 +179,11 @@ def view_results():
                                     if isinstance(value, dict) and "value" in value and "confidence" in value:
                                         processed_result["result_data"][key] = value["value"]
                                         processed_result["confidence_levels"][key] = value["confidence"]
-                                        logger.info(f"Extracted field {key} with value \'{value['value']}\' and confidence \'{value['confidence']}\'")
+                                        logger.info(f"Extracted field {key} with value '{value['value']}' and confidence '{value['confidence']}'")
                                     else:
                                         processed_result["result_data"][key] = value
                                         processed_result["confidence_levels"][key] = "Medium" # Default
-                                        logger.info(f"Field {key} doesn\'t have expected structure, using value \'{value}\' with default Medium confidence")
+                                        logger.info(f"Field {key} doesn't have expected structure, using value '{value}' with default Medium confidence")
                             else:
                                 logger.warning(f"Parsed item answer is not a dictionary: {parsed_answer}")
                                 processed_result["result_data"] = {"extracted_text": answer}
@@ -197,11 +198,11 @@ def view_results():
                             if isinstance(value, dict) and "value" in value and "confidence" in value:
                                 processed_result["result_data"][key] = value["value"]
                                 processed_result["confidence_levels"][key] = value["confidence"]
-                                logger.info(f"Extracted field {key} with value \'{value['value']}\' and confidence \'{value['confidence']}\'")
+                                logger.info(f"Extracted field {key} with value '{value['value']}' and confidence '{value['confidence']}'")
                             else:
                                 processed_result["result_data"][key] = value
                                 processed_result["confidence_levels"][key] = "Medium" # Default
-                                logger.info(f"Field {key} doesn\'t have expected structure, using value \'{value}\' with default Medium confidence")
+                                logger.info(f"Field {key} doesn't have expected structure, using value '{value}' with default Medium confidence")
                     else:
                         # Some other format, store as is
                         logger.warning(f"Item answer is neither string nor dictionary: {type(answer)}. Using as is.")
@@ -219,12 +220,12 @@ def view_results():
                         if base_key in result:
                             processed_result["result_data"][base_key] = result[base_key]
                             processed_result["confidence_levels"][base_key] = value
-                            logger.info(f"Extracted field {base_key} with value \'{result[base_key]}\' and confidence \'{value}\'")
+                            logger.info(f"Extracted field {base_key} with value '{result[base_key]}' and confidence '{value}'")
                     elif not key.startswith("_") and not any(key == field[:-len("_confidence")] for field in confidence_fields):
                         # Field without confidence, add it with default
                         processed_result["result_data"][key] = value
                         processed_result["confidence_levels"][key] = "Medium" # Default
-                        logger.info(f"Field {key} has no confidence field, using value \'{value}\' with default Medium confidence")
+                        logger.info(f"Field {key} has no confidence field, using value '{value}' with default Medium confidence")
             
             # If no structured data found, check for other fields that might contain data
             if not processed_result["result_data"]:
@@ -232,7 +233,7 @@ def view_results():
                 # Look for any fields that might contain extracted data
                 for key in ["extracted_data", "data", "result", "metadata"]:
                     if key in result and result[key]:
-                        logger.info(f"Found potential data in field \'{key}\': {result[key]}")
+                        logger.info(f"Found potential data in field '{key}': {result[key]}")
                         if isinstance(result[key], dict):
                             processed_result["result_data"] = result[key]
                             # Add default confidence for all fields
@@ -269,232 +270,184 @@ def view_results():
             processed_result["result_data"] = {"extracted_text": str(result)}
             processed_result["confidence_levels"]["extracted_text"] = "Medium"
         
-        # Filter based on file name
-        if st.session_state.results_filter.lower() in processed_result["file_name"].lower():
-            # Filter based on confidence level
-            if not st.session_state.confidence_filter: # If no confidence filter selected, show all
-                filtered_results[file_id] = processed_result
-            else:
-                # Check if any field has a confidence level matching the filter
-                has_matching_confidence = False
-                for confidence in processed_result["confidence_levels"].values():
-                    if confidence in st.session_state.confidence_filter:
-                        has_matching_confidence = True
-                        break
-                if has_matching_confidence:
-                    filtered_results[file_id] = processed_result
+        # Apply file name filter if set
+        if st.session_state.results_filter and st.session_state.results_filter.lower() not in processed_result["file_name"].lower():
+            continue
+        
+        # Apply confidence filter if set
+        if st.session_state.confidence_filter:
+            # Check if any field has a confidence level in the filter
+            has_matching_confidence = False
+            for confidence in processed_result["confidence_levels"].values():
+                if confidence in st.session_state.confidence_filter:
+                    has_matching_confidence = True
+                    break
+            
+            if not has_matching_confidence:
+                continue
+        
+        # Add to filtered results
+        filtered_results[file_id] = processed_result
     
-    # Prepare data for table view
-    table_data = []
-    for file_id, data in filtered_results.items():
-        row = {"File Name": data["file_name"], "File ID": file_id}
-        # Add extracted data and confidence to the row
-        for key, value in data["result_data"].items():
-            if not key.startswith("_") and key != "extracted_text": # Skip internal/text fields
-                row[key] = value
-                confidence_key = f"{key} Confidence"
-                row[confidence_key] = data["confidence_levels"].get(key, "N/A")
-        table_data.append(row)
+    # Show number of results
+    st.write(f"Showing {len(filtered_results)} of {len(st.session_state.extraction_results)} results")
     
-    # Create DataFrame
-    df = pd.DataFrame(table_data)
-    
-    # Reorder columns: File Name, File ID, then pairs of (field, field Confidence)
-    if not df.empty:
-        base_cols = ["File Name", "File ID"]
-        field_cols = sorted([col for col in df.columns if col not in base_cols and not col.endswith(" Confidence")])
-        ordered_cols = base_cols + [item for field in field_cols for item in (field, f"{field} Confidence") if item in df.columns]
-        df = df[ordered_cols]
-    
-    # Display results in tabs
+    # Display results
     st.subheader("Extraction Results")
+    
+    # Create tabs for different views
     tab1, tab2 = st.tabs(["Table View", "Detailed View"])
     
-    # Store filtered results for detailed view
-    final_filtered_results = filtered_results
-    
     with tab1:
-        st.write(f"Showing {len(df)} of {len(st.session_state.extraction_results)} results")
-        
-        if not df.empty:
-            # Display table with confidence highlighting
+        # Create a DataFrame for table view
+        if filtered_results:
+            # Get all unique fields across all results
+            all_fields = set()
+            for result in filtered_results.values():
+                all_fields.update(result["result_data"].keys())
+            
+            # Create rows for the DataFrame
+            rows = []
+            for file_id, result in filtered_results.items():
+                row = {"File Name": result["file_name"], "File ID": file_id}
+                
+                # Add fields and their confidence levels
+                for field in all_fields:
+                    if field in result["result_data"]:
+                        row[field] = result["result_data"][field]
+                        confidence = result["confidence_levels"].get(field, "Medium")
+                        row[f"{field} Confidence"] = confidence
+                    else:
+                        row[field] = ""
+                        row[f"{field} Confidence"] = ""
+                
+                rows.append(row)
+            
+            # Create DataFrame
+            df = pd.DataFrame(rows)
+            
+            # Reorder columns to group fields with their confidence
+            columns = ["File Name", "File ID"]
+            for field in all_fields:
+                columns.extend([field, f"{field} Confidence"])
+            
+            # Ensure all columns exist in the DataFrame
+            for col in columns:
+                if col not in df.columns:
+                    df[col] = ""
+            
+            # Reorder columns
+            df = df[columns]
+            
+            # Apply styling to confidence columns
+            styled_df = df.copy()
+            
+            # Display the table with a download button
             st.dataframe(
-                df.style.applymap(
-                    lambda x: f"color: {get_confidence_color(x)}", 
-                    subset=[col for col in df.columns if col.endswith(" Confidence")]
-                ),
-                use_container_width=True,
-                hide_index=True,
-                # Enable selection
-                # on_select="rerun", # Trigger rerun on selection change
-                # selection_mode="multi-row"
+                styled_df,
+                column_config={
+                    **{field: st.column_config.TextColumn(field) for field in all_fields},
+                    **{
+                        f"{field} Confidence": st.column_config.TextColumn(
+                            f"{field} Confidence",
+                            help=f"Confidence level for {field}",
+                            width="small"
+                        )
+                        for field in all_fields
+                    }
+                },
+                hide_index=True
             )
             
-            # Export options
+            # Add export buttons
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Export as CSV", use_container_width=True, key="export_csv_btn"):
-                    # In a real app, we would save to a file
-                    st.download_button(
-                        label="Download CSV",
-                        data=df.to_csv(index=False).encode("utf-8"),
-                        file_name="extraction_results.csv",
-                        mime="text/csv",
-                        key="download_csv_btn"
-                    )
+                if st.button("Export as CSV"):
+                    # Create a download link for CSV
+                    csv = df.to_csv(index=False)
+                    b64 = base64.b64encode(csv.encode()).decode()
+                    href = f'<a href="data:file/csv;base64,{b64}" download="extraction_results.csv">Download CSV File</a>'
+                    st.markdown(href, unsafe_allow_html=True)
             
             with col2:
-                if st.button("Export as Excel", use_container_width=True, key="export_excel_btn"):
-                    # In a real app, we would save to a file
-                    st.info("Excel export would be implemented in the full app")
+                if st.button("Export as Excel"):
+                    # Create a download link for Excel
+                    # Note: This requires additional libraries like openpyxl
+                    try:
+                        excel_file = df.to_excel(index=False)
+                        b64 = base64.b64encode(excel_file).decode()
+                        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="extraction_results.xlsx">Download Excel File</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Error exporting to Excel: {str(e)}")
+                        st.info("Try exporting as CSV instead.")
         else:
-            st.info("No results match the current filter")
+            st.info("No results match the current filters.")
     
     with tab2:
-        # COMPLETELY REDESIGNED DETAILED VIEW TO AVOID NESTED EXPANDERS
-        # Instead of using expanders for each file, use a selectbox to choose which file to view
-        file_options = [(file_id, result_data.get("file_name", "Unknown")) 
-                        for file_id, result_data in final_filtered_results.items()]
-        
-        if not file_options:
-            st.info("No results match the current filter")
+        # Detailed view of a single result
+        if filtered_results:
+            # Create a dropdown to select a file
+            file_options = {result["file_name"]: file_id for file_id, result in filtered_results.items()}
+            selected_file_name = st.selectbox("Select a file to view details", options=list(file_options.keys()))
+            selected_file_id = file_options[selected_file_name]
+            
+            # Get the selected result
+            selected_result = filtered_results[selected_file_id]
+            
+            # Display file information
+            st.subheader("File Information")
+            st.write(f"File: {selected_result['file_name']}")
+            st.write(f"File ID: {selected_file_id}")
+            
+            # Display extracted metadata with confidence indicators
+            st.subheader("Extracted Metadata")
+            
+            # Display key-value pairs with confidence indicators
+            st.write("Key-Value Pairs")
+            
+            for key, value in selected_result["result_data"].items():
+                confidence = selected_result["confidence_levels"].get(key, "Medium")
+                confidence_color = get_confidence_color(confidence)
+                
+                # Create a label with confidence indicator
+                # FIX: Use markdown with HTML that will render properly
+                st.markdown(f"{key} <span style='color:{confidence_color}; font-weight:bold;'>({confidence})</span>", unsafe_allow_html=True)
+                
+                # Display the value in a text area
+                st.text_area(
+                    label=f"Value for {key}",
+                    value=str(value),
+                    key=f"value_{key}_{selected_file_id}",
+                    label_visibility="collapsed"
+                )
+            
+            # Display raw result data for debugging
+            with st.expander("Raw Result Data (Debug View)"):
+                st.json(selected_result["original_data"] if "original_data" in selected_result else selected_result)
         else:
-            # Add a "Select a file" option at the beginning
-            file_options = [("", "Select a file...")] + file_options
-            
-            # Create a selectbox for file selection
-            selected_file_id_name = st.selectbox(
-                "Select a file to view details",
-                options=file_options,
-                format_func=lambda x: x[1],  # Display the file name
-                key="file_selector"
-            )
-            
-            # Get the selected file ID
-            selected_file_id = selected_file_id_name[0] if selected_file_id_name[0] else None
-            
-            # Display file details if a file is selected
-            if selected_file_id and selected_file_id in final_filtered_results:
-                result_data = final_filtered_results[selected_file_id]
-                
-                # Display file info
-                st.write("### File Information")
-                st.write(f"**File:** {result_data.get('file_name', 'Unknown')}")
-                st.write(f"**File ID:** {selected_file_id}")
-                
-                # Display extraction results
-                st.write("### Extracted Metadata")
-                
-                # Extract and display metadata
-                extracted_data = {}
-                confidence_levels = result_data.get("confidence_levels", {})
-                
-                # Get the result data
-                if "result_data" in result_data and result_data["result_data"]:
-                    if isinstance(result_data["result_data"], dict):
-                        # Extract key-value pairs from the result
-                        for key, value in result_data["result_data"].items():
-                            if not key.startswith("_") and key != "extracted_text":  # Skip internal fields
-                                extracted_data[key] = value
-                        
-                        # Check for extracted_text field
-                        if "extracted_text" in result_data["result_data"]:
-                            st.write("#### Extracted Text")
-                            st.write(result_data["result_data"]["extracted_text"])
-                    elif isinstance(result_data["result_data"], str):
-                        # If result_data is a string, display it as extracted text
-                        st.write("#### Extracted Text")
-                        st.write(result_data["result_data"])
-                
-                # Display extracted data as editable fields with confidence
-                if extracted_data:
-                    st.write("#### Key-Value Pairs")
-                    for key, value in extracted_data.items():
-                        confidence = confidence_levels.get(key, "N/A")
-                        confidence_color = get_confidence_color(confidence)
-                        
-                        # FIX: Display confidence using st.markdown below the input field
-                        # Use columns for better layout
-                        col_input, col_confidence = st.columns([3, 1])
-                        
-                        with col_input:
-                            # Create editable fields without HTML in label
-                            if isinstance(value, list):
-                                # For multiSelect fields
-                                new_value = st.multiselect(
-                                    key, # Use plain key as label
-                                    options=value + ["Option 1", "Option 2", "Option 3"],
-                                    default=value,
-                                    key=f"edit_{selected_file_id}_{key}",
-                                    help=f"Edit the value for {key}"
-                                )
-                            else:
-                                # For other field types
-                                new_value = st.text_input(
-                                    key, # Use plain key as label
-                                    value=str(value) if value is not None else "", # Handle None
-                                    key=f"edit_{selected_file_id}_{key}",
-                                    help=f"Edit the value for {key}"
-                                )
-                        
-                        with col_confidence:
-                            # Display confidence level using markdown with color
-                            st.markdown(f"<span style='color:{confidence_color}; font-weight:bold;'>({confidence})</span>", unsafe_allow_html=True)
-                        
-                        # Update value if changed
-                        if new_value != value:
-                            # Find the original result in extraction_results
-                            if selected_file_id in st.session_state.extraction_results:
-                                # Get the original result
-                                original_result = st.session_state.extraction_results[selected_file_id]
-                                
-                                # Update the result_data within the processed result
-                                if "result_data" in result_data and isinstance(result_data["result_data"], dict):
-                                    result_data["result_data"][key] = new_value
-                                    # Optionally update confidence if user edits?
-                                    # result_data["confidence_levels"][key] = "Edited"
-                                
-                                # Update the original result (more complex, depends on original structure)
-                                # This part needs careful implementation based on how original results are stored
-                                # For now, we just update the displayed data
-                                logger.info(f"Value for {key} in file {selected_file_id} changed to {new_value}")
-                                # Need to decide how to persist this change back to original_result
-                else:
-                    st.write("No structured data extracted")
-                
-                # Display raw result data for debugging
-                if "original_data" in result_data:
-                    st.write("### Raw Result Data (Debug View)")
-                    with st.expander("Show Raw Data"):
-                        st.json(result_data["original_data"])
+            st.info("No results match the current filters.")
     
     # Batch operations
     st.subheader("Batch Operations")
     
-    # Get list of file IDs currently displayed
-    displayed_file_ids = list(final_filtered_results.keys())
-    
-    # Select/Deselect All buttons
+    # Select all / Deselect all buttons
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Select All", use_container_width=True, key="select_all_btn"):
-            st.session_state.selected_result_ids = displayed_file_ids
-            st.rerun()
+        if st.button("Select All"):
+            st.session_state.selected_result_ids = list(filtered_results.keys())
     with col2:
-        if st.button("Deselect All", use_container_width=True, key="deselect_all_btn"):
+        if st.button("Deselect All"):
             st.session_state.selected_result_ids = []
-            st.rerun()
     
-    # Show count of selected files
-    st.write(f"Selected {len(st.session_state.selected_result_ids)} of {len(displayed_file_ids)} results")
+    # Show selected count
+    st.write(f"Selected {len(st.session_state.selected_result_ids)} of {len(filtered_results)} results")
     
-    # Apply Metadata button
-    if st.button("Apply Metadata", use_container_width=True, key="apply_metadata_btn"):
+    # Apply metadata button
+    if st.button("Apply Metadata"):
         if not st.session_state.selected_result_ids:
-            st.warning("Please select at least one file to apply metadata.")
+            st.warning("No files selected for metadata application.")
         else:
-            # Call the direct metadata application function
+            # Import here to avoid circular imports
             from modules.direct_metadata_application_enhanced_fixed import apply_metadata_direct
             apply_metadata_direct()
-
-
