@@ -573,10 +573,13 @@ class BoxAPIClient:
                 "type": "metadata_template"
             },
             "ai_agent": {
-                # FIX: Changed type according to documentation example
                 "type": "ai_agent_extract", 
+                # FIX: Include both basic_text and long_text as per documentation example
                 "basic_text": {
                     "model": ai_model
+                },
+                "long_text": {
+                    "model": ai_model # Use the same model for long_text
                 }
             }
         }
