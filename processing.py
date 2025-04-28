@@ -125,15 +125,6 @@ def process_files():
                 )
                 st.session_state.processing_state["processing_mode"] = processing_mode
         
-        # Auto-apply metadata option
-        auto_apply_metadata = st.checkbox(
-            "Automatically apply metadata after extraction",
-            value=True,
-            help="If checked, extracted metadata will be automatically applied to files after processing",
-            key="auto_apply_metadata_checkbox"
-        )
-        st.session_state.processing_state["auto_apply_metadata"] = auto_apply_metadata
-        
         # Template management
         with st.expander("Metadata Template Management"):
             st.write("#### Save Current Configuration as Template")
@@ -222,7 +213,6 @@ def process_files():
                 "max_retries": max_retries,
                 "retry_delay": retry_delay,
                 "processing_mode": processing_mode,
-                "auto_apply_metadata": auto_apply_metadata,
                 "visualization_data": {}
             }
             
@@ -295,96 +285,6 @@ def process_files():
                             break
                     
                     st.error(f"{file_name}: {error}")
-            
-            # Auto-apply metadata if enabled
-            if st.session_state.processing_state.get("auto_apply_metadata", False) and not st.session_state.processing_state.get("metadata_applied", False):
-                st.write("### Applying Metadata")
-                st.info("Automatically applying extracted metadata to files...")
-                
-                # Import apply_metadata function
-                from modules.direct_metadata_application_enhanced_fixed import apply_metadata_to_file_direct
-                
-                # Get client
-                client = st.session_state.client
-                
-                # Create a progress bar for metadata application
-                apply_progress_bar = st.progress(0)
-                apply_status_text = st.empty()
-                
-                # Initialize counters
-                success_count = 0
-                error_count = 0
-                
-                # Create dictionaries for file mapping
-                file_id_to_metadata = {}
-                file_id_to_file_name = {}
-                
-                # Initialize file_id_to_file_name from selected_files
-                for file_info in st.session_state.selected_files:
-                    if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
-                        file_id = str(file_info["id"])
-                        file_id_to_file_name[file_id] = file_info.get("name", f"File {file_id}")
-                
-                # Get results from processing state
-                results_map = st.session_state.processing_state.get("results", {})
-                
-                # Extract metadata for each file
-                for file_id, payload in results_map.items():
-                    # Most APIs put your AI fields under payload["results"]
-                    metadata = payload.get("results", payload)
-                    
-                    # If metadata is a string that looks like JSON, try to parse it
-                    if isinstance(metadata, str):
-                        try:
-                            parsed_metadata = json.loads(metadata)
-                            if isinstance(parsed_metadata, dict):
-                                metadata = parsed_metadata
-                        except json.JSONDecodeError:
-                            # Not valid JSON, keep as is
-                            pass
-                    
-                    # If payload has an "answer" field that's a JSON string, parse it
-                    if isinstance(payload, dict) and "answer" in payload and isinstance(payload["answer"], str):
-                        try:
-                            parsed_answer = json.loads(payload["answer"])
-                            if isinstance(parsed_answer, dict):
-                                metadata = parsed_answer
-                        except json.JSONDecodeError:
-                            # Not valid JSON, keep as is
-                            pass
-                    
-                    file_id_to_metadata[file_id] = metadata
-                
-                # Apply metadata to each file
-                total_files = len(file_id_to_metadata)
-                for i, (file_id, metadata) in enumerate(file_id_to_metadata.items()):
-                    file_name = file_id_to_file_name.get(file_id, "Unknown")
-                    apply_status_text.text(f"Applying metadata to {file_name}... ({i+1}/{total_files})")
-                    
-                    # Apply metadata
-                    result = apply_metadata_to_file_direct(client, file_id, metadata)
-                    
-                    # Update counters
-                    if result["success"]:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                    
-                    # Update progress bar
-                    apply_progress_bar.progress((i + 1) / total_files)
-                
-                # Clear progress indicators
-                apply_progress_bar.empty()
-                apply_status_text.empty()
-                
-                # Display results
-                if error_count == 0:
-                    st.success(f"Successfully applied metadata to all {success_count} files!")
-                else:
-                    st.warning(f"Applied metadata to {success_count} files with {error_count} errors.")
-                
-                # Mark metadata as applied
-                st.session_state.processing_state["metadata_applied"] = True
             
             # Continue button
             st.write("---")
@@ -551,26 +451,6 @@ def process_files_with_progress(files, extraction_functions, batch_size=5, proce
     # Rerun to update UI
     st.rerun()
 
-def get_document_type_for_file(file_id):
-    """
-    Get document type for a file from categorization results
-    
-    Args:
-        file_id: File ID
-        
-    Returns:
-        str: Document type or None if not categorized
-    """
-    # Check if document categorization has been performed
-    if (
-        hasattr(st.session_state, "document_categorization") and 
-        st.session_state.document_categorization.get("is_categorized", False) and
-        file_id in st.session_state.document_categorization["results"]
-    ):
-        return st.session_state.document_categorization["results"][file_id]["document_type"]
-    
-    return None
-
 def process_file(file, extraction_functions):
     """
     Process a single file
@@ -595,29 +475,12 @@ def process_file(file, extraction_functions):
         if has_feedback:
             logger.info(f"Using feedback data for file: {file_name}")
         
-        # Get document type for this file (if categorized)
-        document_type = get_document_type_for_file(file_id)
-        if document_type:
-            logger.info(f"File {file_name} has document type: {document_type}")
-        
         # Determine extraction method
         if st.session_state.metadata_config["extraction_method"] == "structured":
             # Structured extraction
             if st.session_state.metadata_config["use_template"]:
-                # Get template ID based on document type if available
-                template_id = None
-                
-                # Check if we have a document type and a mapping for it
-                if document_type and hasattr(st.session_state, "document_type_to_template"):
-                    mapped_template_id = st.session_state.document_type_to_template.get(document_type)
-                    if mapped_template_id:
-                        template_id = mapped_template_id
-                        logger.info(f"Using document type specific template for {document_type}: {template_id}")
-                
-                # If no document type specific template, use the general one
-                if not template_id:
-                    template_id = st.session_state.metadata_config["template_id"]
-                    logger.info(f"Using general template: {template_id}")
+                # Template-based extraction
+                template_id = st.session_state.metadata_config["template_id"]
                 
                 # Parse the template ID to extract the correct components
                 # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
@@ -689,24 +552,12 @@ def process_file(file, extraction_functions):
                         result[key] = value
         else:
             # Freeform extraction
-            # Get prompt based on document type if available
-            prompt = st.session_state.metadata_config["freeform_prompt"]
-            
-            # Check if we have a document type and a specific prompt for it
-            if document_type and "document_type_prompts" in st.session_state.metadata_config:
-                document_type_prompt = st.session_state.metadata_config["document_type_prompts"].get(document_type)
-                if document_type_prompt:
-                    prompt = document_type_prompt
-                    logger.info(f"Using document type specific prompt for {document_type}")
-                else:
-                    logger.info(f"No specific prompt found for document type {document_type}, using general prompt")
-            
-            logger.info(f"Using freeform extraction with prompt: {prompt[:30]}...")
+            logger.info(f"Using freeform extraction with prompt: {st.session_state.metadata_config['freeform_prompt'][:30]}...")
             
             # Use real API call
             api_result = extraction_functions["extract_freeform_metadata"](
                 file_id=file_id,
-                prompt=prompt,
+                prompt=st.session_state.metadata_config["freeform_prompt"],
                 ai_model=st.session_state.metadata_config["ai_model"]
             )
             
