@@ -28,7 +28,7 @@ def fix_metadata_format(metadata_values):
         if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
             try:
                 # Replace single quotes with double quotes for JSON compatibility
-                json_compatible_str = value.replace("\"", "\"") # Use double quotes for replacement
+                json_compatible_str = value.replace("'", '"') # Replace single quotes with double quotes
                 # Parse the string representation into a proper Python dictionary
                 parsed_value = json.loads(json_compatible_str)
                 formatted_metadata[key] = parsed_value
