@@ -1,15 +1,17 @@
 import streamlit as st
 import logging
+import time # Added missing import
 from typing import Any
 
 # Configure logging
+# FIX: Corrected string escaping for format string
 logging.basicConfig(level=logging.INFO, 
-                   format=\'%(asctime)s - %(name)s - %(levelname)s - %(message)s\')
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def initialize_state(key: str, default_value: Any):
     """
-    Initializes a specific key in Streamlit\'s session state if it doesn\"t exist.
+    Initializes a specific key in Streamlit's session state if it doesn't exist.
 
     Args:
         key (str): The session state key to initialize.
@@ -103,11 +105,12 @@ def get_safe_session_state(key, default_value=None):
     
     Args:
         key (str): The session state key to access
-        default_value: The default value to return if key doesn\'t exist
+        default_value: The default value to return if key doesn't exist
         
     Returns:
         The value from session state or the default value
     """
+    # FIX: Corrected string escaping in docstring
     return st.session_state.get(key, default_value)
 
 def set_safe_session_state(key, value):
@@ -123,7 +126,8 @@ def set_safe_session_state(key, value):
         st.session_state[key] = value
         return True
     except Exception as e:
-        logger.error(f"Error setting session state key \'{key}\': {str(e)}")
+        # FIX: Corrected string escaping in f-string
+        logger.error(f"Error setting session state key '{key}': {str(e)}")
         return False
 
 def reset_session_state():

@@ -123,11 +123,13 @@ def display_processing_ui(api_client: BoxAPIClient):
         if files_to_process:
             st.write("**Selected Files:**")
             # Use a DataFrame for better display
-            file_names = [f.get("name", f"ID: {f["id"]}") for f in files_to_process]
+            # FIX: Fixed nested f-string syntax by using proper escaping
+            file_names = [f.get("name", f"ID: {f.get('id', 'unknown')}") for f in files_to_process]
             st.dataframe(file_names, hide_index=True, column_config={"value": "File Name"})
         if folders_to_process:
             st.write("**Selected Folders:**")
-            folder_names = [f.get("name", f"ID: {f["id"]}") for f in folders_to_process]
+            # FIX: Fixed nested f-string syntax by using proper escaping
+            folder_names = [f.get("name", f"ID: {f.get('id', 'unknown')}") for f in folders_to_process]
             st.dataframe(folder_names, hide_index=True, column_config={"value": "Folder Name"})
 
     # --- Template Cache Management ---
@@ -257,7 +259,7 @@ def display_processing_ui(api_client: BoxAPIClient):
         if app_progress == app_total and app_total > 0:
              st.session_state.application_state["is_applying"] = False
              st.session_state.application_state["status_message"] = "Application complete."
-             st.success(f"Metadata application complete. Success: {app_total - len(st.session_state.application_state["errors"])}. Errors: {len(st.session_state.application_state["errors"])}.")
+             st.success(f"Metadata application complete. Success: {app_total - len(st.session_state.application_state['errors'])}. Errors: {len(st.session_state.application_state['errors'])}.")
              if st.session_state.application_state["errors"]:
                   with st.expander("Errors During Application"):
                        st.error("Some errors occurred during metadata application:")
@@ -289,7 +291,7 @@ def display_processing_results():
             # Assuming errors dict maps file_id to error message/details
             # Need file names - requires mapping IDs back to names if possible
             # Let's try to get names from selected_files if available
-            file_id_to_name = {f["id"]: f.get("name", f"ID: {f["id"]}") for f in st.session_state.get("selected_files", [])}
+            file_id_to_name = {f["id"]: f.get("name", f"ID: {f.get('id', 'unknown')}") for f in st.session_state.get("selected_files", [])}
             
             for file_id, error_details in errors.items():
                 file_name = file_id_to_name.get(file_id, f"ID: {file_id}")
@@ -346,7 +348,7 @@ def expand_folders(api_client: BoxAPIClient, folder_ids: List[str]) -> List[Dict
                 items = api_client.get_folder_items(current_folder_id, limit=limit, offset=offset, fields=["id", "type", "name"])
                 
                 if "error" in items:
-                    logger.error(f"Error fetching items for folder {current_folder_id}: {items["error"]}")
+                    logger.error(f"Error fetching items for folder {current_folder_id}: {items['error']}")
                     # Store error associated with the folder itself? Or just log?
                     st.session_state.processing_state["errors"][f"folder_{current_folder_id}"] = items["error"]
                     break # Stop processing this folder on error
@@ -579,7 +581,8 @@ def _process_batch_extraction(api_client: BoxAPIClient, batch_files: List[Dict],
         if file.get("id") and file.get("type") != "folder":
              # Always set type to 'file' for the API call
              items.append({"id": file["id"], "type": "file"})
-             file_id_map[file["id"]] = file.get("name", f"ID: {file['id']}") # Use get for name too
+             # FIX: Fixed nested f-string syntax by using proper escaping
+             file_id_map[file["id"]] = file.get("name", f"ID: {file.get('id', 'unknown')}") # Use get for name too
         else:
              logger.warning(f"Skipping invalid or non-file item in batch: {file}")
 
@@ -928,4 +931,3 @@ def get_extraction_functions():
         # "extract_structured_metadata": api_client.some_structured_method, # Example
         # "extract_freeform_metadata": api_client.some_freeform_method  # Example
     }
-
