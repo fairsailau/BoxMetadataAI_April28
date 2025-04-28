@@ -36,15 +36,9 @@ def metadata_extraction():
             
             # Get access token from client
             access_token = None
-            if hasattr(client, 
-'_oauth
-'):
+            if hasattr(client, '_oauth'):
                 access_token = client._oauth.access_token
-            elif hasattr(client, 
-'auth
-') and hasattr(client.auth, 
-'access_token
-'):
+            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
                 access_token = client.auth.access_token
             
             if not access_token:
@@ -52,16 +46,8 @@ def metadata_extraction():
             
             # Set headers
             headers = {
-                
-'Authorization
-': f
-'Bearer {access_token}
-',
-                
-'Content-Type
-': 
-'application/json
-'
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
             }
             
             # Create AI agent configuration with proper format for structured extraction
@@ -159,11 +145,7 @@ def metadata_extraction():
 
                         try:
                             # Check if field_value is a string that looks like our requested JSON
-                            if isinstance(field_value, str) and field_value.strip().startswith(
-'{
-') and field_value.strip().endswith(
-'}
-'):
+                            if isinstance(field_value, str) and field_value.strip().startswith('{') and field_value.strip().endswith('}'):
                                 try:
                                     # Attempt to parse as JSON
                                     parsed_value = json.loads(field_value)
@@ -173,33 +155,23 @@ def metadata_extraction():
                                         confidence_level = parsed_value["confidence"]
                                         # Validate confidence value
                                         if confidence_level not in ["High", "Medium", "Low"]:
-                                            logger.warning(f"Field {field_key}: Unexpected confidence value 
-'{confidence_level}
-', defaulting to Medium.")
+                                            logger.warning(f"Field {field_key}: Unexpected confidence value '{confidence_level}', defaulting to Medium.")
                                             confidence_level = "Medium"
                                     else:
                                         # Parsed JSON but not the expected structure
-                                        logger.warning(f"Field {field_key}: Parsed JSON but keys 
-'value
-' and 
-'confidence
-' not found. Using raw value.")
+                                        logger.warning(f"Field {field_key}: Parsed JSON but keys 'value' and 'confidence' not found. Using raw value.")
                                         extracted_value = field_value # Keep original string
                                         confidence_level = "Medium" # Default confidence
                                 except json.JSONDecodeError:
                                     # String looked like JSON but failed to parse
-                                    logger.warning(f"Field {field_key}: Failed to parse potential JSON value 
-'{field_value}
-'. Using raw value.")
+                                    logger.warning(f"Field {field_key}: Failed to parse potential JSON value '{field_value}'. Using raw value.")
                                     extracted_value = field_value # Keep original string
                                     confidence_level = "Medium" # Default confidence
                             else:
-                                # field_value is not a string or doesn
-'t look like JSON
+                                # field_value is not a string or doesn't look like JSON
                                 # Assume the value is the direct extraction result
                                 extracted_value = field_value
-                                # We didn
-'t get confidence in the expected format, default to Medium
+                                # We didn't get confidence in the expected format, default to Medium
                                 confidence_level = "Medium"
                                 logger.info(f"Field {field_key}: Value is not the expected JSON format. Using raw value and Medium confidence.")
 
@@ -208,9 +180,7 @@ def metadata_extraction():
                             processed_response[f"{field_key}_confidence"] = confidence_level
 
                         except Exception as e:
-                            logger.error(f"Error processing field {field_key} with value 
-'{field_value}
-': {str(e)}")
+                            logger.error(f"Error processing field {field_key} with value '{field_value}': {str(e)}")
                             processed_response[field_key] = field_value # Store original value on error
                             processed_response[f"{field_key}_confidence"] = "Low" # Low confidence due to processing error
                 else:
@@ -248,15 +218,9 @@ def metadata_extraction():
             
             # Get access token from client
             access_token = None
-            if hasattr(client, 
-'_oauth
-'):
+            if hasattr(client, '_oauth'):
                 access_token = client._oauth.access_token
-            elif hasattr(client, 
-'auth
-') and hasattr(client.auth, 
-'access_token
-'):
+            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
                 access_token = client.auth.access_token
             
             if not access_token:
@@ -264,26 +228,14 @@ def metadata_extraction():
             
             # Set headers
             headers = {
-                
-'Authorization
-': f
-'Bearer {access_token}
-',
-                
-'Content-Type
-': 
-'application/json
-'
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
             }
             
             # Enhance the prompt to request confidence levels
             enhanced_prompt = prompt
             if not "confidence" in prompt.lower():
-                enhanced_prompt = prompt + " For each extracted field, provide your confidence level (High, Medium, or Low) in the accuracy of the extraction. Format your response as a JSON object with each field having a nested object containing 
-'value
-' and 
-'confidence
-' keys."
+                enhanced_prompt = prompt + " For each extracted field, provide your confidence level (High, Medium, or Low) in the accuracy of the extraction. Format your response as a JSON object with each field having a nested object containing 'value' and 'confidence' keys."
             
             # Create AI agent configuration with confidence scoring instructions
             ai_agent = {
@@ -340,12 +292,8 @@ def metadata_extraction():
                     # Try to parse the response text as JSON
                     try:
                         # Attempt to find and parse JSON within the response text
-                        json_start = response_text.find(
-'{
-')
-                        json_end = response_text.rfind(
-'}
-') + 1
+                        json_start = response_text.find('{')
+                        json_end = response_text.rfind('}') + 1
 
                         if json_start != -1 and json_end > json_start:
                             json_str = response_text[json_start:json_end]
@@ -360,9 +308,7 @@ def metadata_extraction():
                                         confidence_level = field_data["confidence"]
                                         # Validate confidence
                                         if confidence_level not in ["High", "Medium", "Low"]:
-                                            logger.warning(f"Field {field_key}: Unexpected confidence value 
-'{confidence_level}
-', defaulting to Medium.")
+                                            logger.warning(f"Field {field_key}: Unexpected confidence value '{confidence_level}', defaulting to Medium.")
                                             confidence_level = "Medium"
 
                                         processed_response[field_key] = extracted_value
@@ -374,43 +320,31 @@ def metadata_extraction():
                                         processed_response[f"{field_key}_confidence"] = "Medium"
                                 parsed_successfully = True
                             else:
-                                # Parsed JSON but it
-'s not a dictionary (e.g., a list)
-                                 logger.warning(f"Parsed JSON is not a dictionary: {json_str}. Storing raw response.")
+                                # Parsed JSON but it's not a dictionary (e.g., a list)
+                                logger.warning(f"Parsed JSON is not a dictionary: {json_str}. Storing raw response.")
                         else:
                             # No JSON object found in the response text
-                            logger.warning(f"No JSON object found in response text: {response_text}. Storing raw response.")
+                            logger.warning(f"No JSON object found in response text. Storing raw response.")
 
                     except json.JSONDecodeError as e:
                         # Failed to parse the potential JSON string
-                        logger.warning(f"Failed to parse JSON from response text: {response_text}. Error: {e}. Storing raw response.")
+                        logger.warning(f"Failed to parse JSON from response text: {json_str}. Error: {e}. Storing raw response.")
                     except Exception as e:
                         # General error during parsing
-                        logger.error(f"Error processing freeform response: {response_text}. Error: {e}. Storing raw response.")
+                        logger.error(f"Error processing freeform response. Error: {e}. Storing raw response.")
 
                     # If parsing failed or no JSON found, store the raw response text
                     if not parsed_successfully:
                         processed_response["_raw_response"] = response_text
                         processed_response["_confidence_processing_failed"] = True # Indicate failure
-
                 else:
-                    # No 
-'response
-' field in the entry
-                    logger.warning(f"No 
-'response
-' field found in the freeform API entry: {entry}")
-                    processed_response["_error"] = "No 
-'response
-' field in API entry"
+                    # No 'response' field in the entry
+                    logger.warning(f"No 'response' field found in the freeform API entry: {entry}")
+                    processed_response["_error"] = "No 'response' field in API entry"
                     processed_response["_confidence_processing_failed"] = True
             else:
-                logger.warning(f"No 
-'entries
-' found in the freeform API response: {response_data}")
-                processed_response["_error"] = "No 
-'entries
-' in API response"
+                logger.warning(f"No 'entries' found in the freeform API response: {response_data}")
+                processed_response["_error"] = "No 'entries' in API response"
                 processed_response["_confidence_processing_failed"] = True
             
             # Return the processed response
@@ -429,8 +363,7 @@ def metadata_extraction():
 # Example usage (for testing purposes)
 if __name__ == "__main__":
     # This part would require a running Streamlit app context with authentication
-    # and session state, so it
-'s primarily for structural reference.
+    # and session state, so it's primarily for structural reference.
     
     # Mock Streamlit session state for local testing (if needed)
     # st.session_state.client = ... # Initialize with a mock or real client
@@ -448,4 +381,3 @@ if __name__ == "__main__":
     # result_freeform = extraction_funcs["extract_freeform_metadata"](file_id, prompt=prompt)
     # print(result_freeform)
     pass
-
