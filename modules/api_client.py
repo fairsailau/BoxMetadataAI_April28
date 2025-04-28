@@ -554,6 +554,7 @@ class BoxAPIClient:
                                          items: List[Dict[str, str]], 
                                          template_scope: str, 
                                          template_key: str, 
+                                         fields: List[Dict[str, Any]], # FIX: Added fields parameter
                                          ai_model: str = "google__gemini_2_0_flash_001") -> Dict[str, Any]:
         """
         Perform batch structured metadata extraction using Box AI.
@@ -562,6 +563,7 @@ class BoxAPIClient:
             items: List of item dictionaries, e.g., [{'id': 'file_id_1', 'type': 'file'}, ...]
             template_scope: The scope of the metadata template (e.g., 'enterprise_12345').
             template_key: The key of the metadata template.
+            fields: List of field definitions from the template schema.
             ai_model: The AI model to use (default: google__gemini_2_0_flash_001).
             
         Returns:
@@ -575,6 +577,7 @@ class BoxAPIClient:
                 "scope": template_scope,
                 "type": "metadata_template"
             },
+            "fields": fields, # FIX: Include fields in the request payload
             "ai_agent": {
                 "type": "ai_agent_extract", 
                 "basic_text": {
@@ -585,5 +588,5 @@ class BoxAPIClient:
                 }
             }
         }
-        logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope}.{template_key}.")
+        logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope}.{template_key} with {len(fields)} fields.")
         return self.call_api(endpoint, method="POST", data=data)
