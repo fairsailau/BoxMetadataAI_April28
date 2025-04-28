@@ -541,6 +541,9 @@ class BoxAPIClient:
                 "type": "ai_agent_extract",
                 "basic_text": {
                     "model": ai_model
+                },
+                "long_text": {
+                    "model": ai_model
                 }
             }
         }
@@ -574,16 +577,13 @@ class BoxAPIClient:
             },
             "ai_agent": {
                 "type": "ai_agent_extract", 
-                # FIX: Include both basic_text and long_text as per documentation example
                 "basic_text": {
                     "model": ai_model
                 },
                 "long_text": {
-                    "model": ai_model # Use the same model for long_text
+                    "model": ai_model
                 }
             }
         }
         logger.info(f"Calling batch structured extraction for {len(items)} items using template {template_scope}.{template_key}.")
         return self.call_api(endpoint, method="POST", data=data)
-
-
