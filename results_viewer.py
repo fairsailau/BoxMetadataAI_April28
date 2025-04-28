@@ -369,7 +369,9 @@ def view_results():
                 if st.button("Export as CSV", use_container_width=True, key="export_csv_btn"):
                     # In a real app, we would save to a file
                     st.download_button(
-                        label="Download CSV",                        data=df.to_csv(index=False).encode("utf-8"),                        file_name="extraction_results.csv",
+                        label="Download CSV",
+                        data=df.to_csv(index=False).encode("utf-8"),
+                        file_name="extraction_results.csv",
                         mime="text/csv",
                         key="download_csv_btn"
                     )
