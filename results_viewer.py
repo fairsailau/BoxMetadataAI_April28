@@ -269,99 +269,66 @@ def view_results():
             processed_result["result_data"] = {"extracted_text": str(result)}
             processed_result["confidence_levels"]["extracted_text"] = "Medium"
         
-        # Add to filtered results if it matches filters
-        file_name_match = st.session_state.results_filter.lower() in processed_result["file_name"].lower()
-        
-        # Check if any field has a confidence level matching the filter
-        confidence_match = False
-        if not st.session_state.confidence_filter: # If no filter selected, show all
-            confidence_match = True
-        else:
-            for confidence_level in processed_result.get("confidence_levels", {}).values():
-                if confidence_level in st.session_state.confidence_filter:
-                    confidence_match = True
-                    break
-        
-        if file_name_match and confidence_match:
-            filtered_results[file_id] = processed_result
-            logger.info(f"Added file {file_id} to filtered results")
+        # Filter based on file name
+        if st.session_state.results_filter.lower() in processed_result["file_name"].lower():
+            # Filter based on confidence level
+            if not st.session_state.confidence_filter: # If no confidence filter selected, show all
+                filtered_results[file_id] = processed_result
+            else:
+                # Check if any field has a confidence level matching the filter
+                has_matching_confidence = False
+                for confidence in processed_result["confidence_levels"].values():
+                    if confidence in st.session_state.confidence_filter:
+                        has_matching_confidence = True
+                        break
+                if has_matching_confidence:
+                    filtered_results[file_id] = processed_result
     
-    # Display count of filtered results
-    final_filtered_results = filtered_results
-    st.write(f"Showing {len(final_filtered_results)} of {len(st.session_state.extraction_results)} results")
+    # Prepare data for table view
+    table_data = []
+    for file_id, data in filtered_results.items():
+        row = {"File Name": data["file_name"], "File ID": file_id}
+        # Add extracted data and confidence to the row
+        for key, value in data["result_data"].items():
+            if not key.startswith("_") and key != "extracted_text": # Skip internal/text fields
+                row[key] = value
+                confidence_key = f"{key} Confidence"
+                row[confidence_key] = data["confidence_levels"].get(key, "N/A")
+        table_data.append(row)
     
-    # Display results
+    # Create DataFrame
+    df = pd.DataFrame(table_data)
+    
+    # Reorder columns: File Name, File ID, then pairs of (field, field Confidence)
+    if not df.empty:
+        base_cols = ["File Name", "File ID"]
+        field_cols = sorted([col for col in df.columns if col not in base_cols and not col.endswith(" Confidence")])
+        ordered_cols = base_cols + [item for field in field_cols for item in (field, f"{field} Confidence") if item in df.columns]
+        df = df[ordered_cols]
+    
+    # Display results in tabs
     st.subheader("Extraction Results")
-    
-    # Determine if we\'re using structured or freeform extraction
-    is_structured = st.session_state.metadata_config.get("extraction_method") == "structured"
-    
-    # Create tabs for different views
     tab1, tab2 = st.tabs(["Table View", "Detailed View"])
     
+    # Store filtered results for detailed view
+    final_filtered_results = filtered_results
+    
     with tab1:
-        # Table view
-        table_data = []
-        all_columns = set(["File Name", "File ID"])
+        st.write(f"Showing {len(df)} of {len(st.session_state.extraction_results)} results")
         
-        for file_id, result_data in final_filtered_results.items():
-            # Basic file info
-            row = {"File Name": result_data.get("file_name", "Unknown"), "File ID": file_id}
-            
-            # Extract and add metadata to the table
-            extracted_text = ""
-            
-            # Get the result data
-            if "result_data" in result_data and result_data["result_data"]:
-                if isinstance(result_data["result_data"], dict):
-                    # For structured data, add key fields and confidence to the table
-                    for key, value in result_data["result_data"].items():
-                        if not key.startswith("_") and key != "extracted_text":  # Skip internal fields
-                            confidence = result_data.get("confidence_levels", {}).get(key, "N/A")
-                            row[key] = str(value) if not isinstance(value, list) else ", ".join(str(v) for v in value)
-                            row[f"{key} Confidence"] = confidence
-                            all_columns.add(key)
-                            all_columns.add(f"{key} Confidence")
-                            # Limit to first 3 fields + confidence to keep table manageable
-                            if len(row) > 8:  # File Name, File ID + 3 fields + 3 confidences
-                                break
-                    
-                    # Create a summary for the Extracted Text column
-                    extracted_text = ", ".join([f"{k}: {v}" for k, v in list(result_data["result_data"].items())[:3]])
-                elif isinstance(result_data["result_data"], str):
-                    # If result_data is a string, use it directly
-                    extracted_text = result_data["result_data"]
-            
-            # Add extracted text to row if not already added
-            if "Extracted Text" not in row and extracted_text:
-                row["Extracted Text"] = (extracted_text[:100] + "...") if len(extracted_text) > 100 else extracted_text
-                all_columns.add("Extracted Text")
-            elif "Extracted Text" not in row:
-                row["Extracted Text"] = "No text extracted"
-                all_columns.add("Extracted Text")
-            
-            table_data.append(row)
-        
-        if table_data:
-            # Create dataframe
-            df = pd.DataFrame(table_data)
-            
-            # Reorder columns (optional, place File Name/ID first)
-            ordered_columns = ["File Name", "File ID"] + sorted([col for col in all_columns if col not in ["File Name", "File ID"]])
-            df = df.reindex(columns=ordered_columns, fill_value="")
-            
-            # Display dataframe with confidence styling
-            def style_confidence(val):
-                color = get_confidence_color(val)
-                return f"color: {color}; font-weight: bold;"
-            
-            # Apply styling to confidence columns
-            styled_df = df.style
-            for col in df.columns:
-                if col.endswith(" Confidence"):
-                    styled_df = styled_df.applymap(style_confidence, subset=[col])
-            
-            st.dataframe(styled_df, use_container_width=True)
+        if not df.empty:
+            # Display table with confidence highlighting
+            st.dataframe(
+                df.style.applymap(
+                    lambda x: f"color: {get_confidence_color(x)}", 
+                    subset=[col for col in df.columns if col.endswith(" Confidence")]
+                ),
+                use_container_width=True,
+                hide_index=True,
+                # Enable selection
+                # on_select="rerun", # Trigger rerun on selection change
+                # selection_mode="multi-row"
+            )
             
             # Export options
             col1, col2 = st.columns(2)
@@ -412,7 +379,7 @@ def view_results():
                 
                 # Display file info
                 st.write("### File Information")
-                st.write(f"**File:** {result_data.get(\'file_name\', \'Unknown\')}")
+                st.write(f"**File:** {result_data.get('file_name', 'Unknown')}")
                 st.write(f"**File ID:** {selected_file_id}")
                 
                 # Display extraction results
@@ -472,7 +439,7 @@ def view_results():
                         
                         with col_confidence:
                             # Display confidence level using markdown with color
-                            st.markdown(f"<span style=\'color:{confidence_color}; font-weight:bold;\'>({confidence})</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span style='color:{confidence_color}; font-weight:bold;'>({confidence})</span>", unsafe_allow_html=True)
                         
                         # Update value if changed
                         if new_value != value:
@@ -529,4 +496,5 @@ def view_results():
             # Call the direct metadata application function
             from modules.direct_metadata_application_enhanced_fixed import apply_metadata_direct
             apply_metadata_direct()
+
 
