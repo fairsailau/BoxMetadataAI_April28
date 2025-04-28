@@ -334,6 +334,7 @@ def view_results():
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("Export as CSV", use_container_width=True, key="export_csv_btn"):
+                    pass # Placeholder to fix indentation after commenting out download button
                     # In a real app, we would save to a file
                     # Temporarily commented out due to persistent deployment error
                     # st.download_button(
