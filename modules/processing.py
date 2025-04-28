@@ -6,13 +6,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
 from modules.api_client import BoxAPIClient
-from modules.session_state_manager import SessionStateManager
+# FIX: Import the specific function needed, not the non-existent class
+from modules.session_state_manager import initialize_state
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Initialize session state keys related to processing
-SessionStateManager.initialize_state("processing_state", {
+# FIX: Call the imported function directly
+initialize_state("processing_state", {
     "is_processing": False,
     "progress": 0,
     "total_files": 0,
@@ -22,8 +24,8 @@ SessionStateManager.initialize_state("processing_state", {
     "status_message": "Ready to process",
     "cancel_requested": False
 })
-SessionStateManager.initialize_state("extraction_results", {})
-SessionStateManager.initialize_state("application_state", {
+initialize_state("extraction_results", {})
+initialize_state("application_state", {
     "is_applying": False,
     "progress": 0,
     "total_files": 0,
@@ -149,7 +151,7 @@ def display_processing_ui(api_client: BoxAPIClient):
         start_button_disabled = st.session_state.processing_state["is_processing"]
         if st.button("Start Processing", disabled=start_button_disabled):
             # Reset state before starting
-            st.session_state.processing_state = {
+            initialize_state("processing_state", {
                 "is_processing": True,
                 "progress": 0,
                 "total_files": 0, # Will be updated after folder expansion
@@ -158,16 +160,16 @@ def display_processing_ui(api_client: BoxAPIClient):
                 "errors": {},
                 "status_message": "Initializing...",
                 "cancel_requested": False
-            }
-            st.session_state.extraction_results = {} # Clear previous results
-            st.session_state.application_state = {
+            })
+            initialize_state("extraction_results", {}) # Clear previous results
+            initialize_state("application_state", {
                 "is_applying": False,
                 "progress": 0,
                 "total_files": 0,
                 "errors": {},
                 "status_message": "Ready to apply",
                 "cancel_requested": False
-            }
+            })
             logger.info("Processing started by user.")
             # Trigger the processing in the background
             # We use st.rerun() to update the UI immediately, 
@@ -218,14 +220,14 @@ def display_processing_ui(api_client: BoxAPIClient):
             
             if files_to_apply:
                 logger.info(f"Starting automatic metadata application for {len(files_to_apply)} files.")
-                st.session_state.application_state = {
+                initialize_state("application_state", {
                     "is_applying": True,
                     "progress": 0,
                     "total_files": len(files_to_apply),
                     "errors": {},
                     "status_message": "Starting automatic application...",
                     "cancel_requested": False
-                }
+                })
                 # Trigger application process
                 run_metadata_application(api_client, files_to_apply)
                 st.rerun() # Rerun to show application progress
