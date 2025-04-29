@@ -436,7 +436,7 @@ def apply_metadata_direct():
             if apply_as_template and target_template_id:
                 # Parse the target_template_id to extract the correct components
                 # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
-                parts = target_template_id.split(	_	)
+                parts = target_template_id.split('_')
                 
                 # Extract the scope and enterprise ID
                 scope = parts[0]  # e.g., "enterprise"
