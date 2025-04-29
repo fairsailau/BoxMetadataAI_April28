@@ -495,8 +495,8 @@ def view_results():
         if not st.session_state.selected_result_ids:
             st.warning("Please select at least one file to apply metadata.")
         else:
-            # Call the direct metadata application function
-            from modules.direct_metadata_application_enhanced_fixed import apply_metadata_direct
-            apply_metadata_direct()
+            # Navigate to the Apply Metadata page
+            st.session_state.current_page = "Apply Metadata"
+            st.rerun()
 
 
