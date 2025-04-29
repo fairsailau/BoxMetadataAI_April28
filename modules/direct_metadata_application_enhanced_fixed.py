@@ -378,47 +378,77 @@ def apply_metadata_direct():
                     "error": "No valid metadata found after filtering placeholders"
                 }
             
-            # Normalize keys if requested
-            if normalize_keys:
-                normalized_metadata = {}
-                for key, value in metadata_values.items():
-                    # Convert to lowercase and replace spaces with underscores
-                    normalized_key = key.lower().replace(" ", "_").replace("-", "_")
-                    normalized_metadata[normalized_key] = value
-                metadata_values = normalized_metadata
-            
             # Convert all values to strings for Box metadata
+            metadata_values_final = {}
             for key, value in metadata_values.items():
                 if not isinstance(value, (str, int, float, bool)):
-                    metadata_values[key] = str(value)
+                    metadata_values_final[key] = str(value)
+                else:
+                    metadata_values_final[key] = value
+            metadata_values = metadata_values_final # Use the processed dict
             
             # Debug logging
             logger.info(f"Applying metadata for file: {file_name} ({file_id})")
-            logger.info(f"Metadata values after normalization: {json.dumps(metadata_values, default=str)}")
+            logger.info(f"Metadata values before template/properties check: {json.dumps(metadata_values, default=str)}")
             
             # Get file object
             file_obj = client.file(file_id=file_id)
-            
-            # Check if we're using structured extraction with a template
-            if "metadata_config" in st.session_state and st.session_state.metadata_config.get("extraction_method") == "structured" and st.session_state.metadata_config.get("use_template"):
-                # Get template information
-                template_id = st.session_state.metadata_config.get("template_id", "")
-                
-                # Parse the template ID to extract the correct components
+                        # --- BEGIN TEMPLATE SELECTION LOGIC ---
+            target_template_id = ""
+            apply_as_template = False
+
+            # Check if structured extraction is selected
+            if st.session_state.metadata_config.get("extraction_method") == "structured":
+                # 1. Get document type for the current file
+                doc_type = None
+                if hasattr(st.session_state, "document_categorization") and file_id in st.session_state.document_categorization.get("results", {}):
+                    doc_type = st.session_state.document_categorization["results"][file_id].get("document_type")
+                    logger.info(f"File {file_id} has document type: {doc_type}")
+                else:
+                    logger.info(f"No document type found for file {file_id} in categorization results.")
+
+                # 2. Check for specific mapping for this document type
+                if doc_type and hasattr(st.session_state, "document_type_to_template") and doc_type in st.session_state.document_type_to_template:
+                    mapped_template_id = st.session_state.document_type_to_template[doc_type]
+                    if mapped_template_id:
+                        target_template_id = mapped_template_id
+                        apply_as_template = True
+                        logger.info(f"Using mapped template 	{target_template_id}	 for doc type {doc_type}")
+                    else:
+                        logger.info(f"Doc type {doc_type} is mapped to None, will check default.")
+                else:
+                    logger.info(f"No specific template mapping found for doc type {doc_type}, will check default.")
+
+                # 3. If no specific mapping, check for default template
+                if not apply_as_template:
+                    default_template_id = st.session_state.metadata_config.get("template_id", "")
+                    if default_template_id:
+                        target_template_id = default_template_id
+                        apply_as_template = True
+                        logger.info(f"Using default template 	{target_template_id}	 for file {file_id}")
+                    else:
+                        logger.info(f"No default template selected. Will apply as properties.")
+            else:
+                logger.info("Extraction method is not structured. Will apply as properties.")
+            # --- END TEMPLATE SELECTION LOGIC ---
+
+            # Check if we determined a template should be used
+            if apply_as_template and target_template_id:
+                # Parse the target_template_id to extract the correct components
                 # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
-                parts = template_id.split('_')
+                parts = target_template_id.split(	_	)
                 
                 # Extract the scope and enterprise ID
                 scope = parts[0]  # e.g., "enterprise"
                 enterprise_id = parts[1] if len(parts) > 1 else ""
                 
                 # Extract the actual template key (last part)
-                template_key = parts[-1] if len(parts) > 2 else template_id
+                template_key = parts[-1] if len(parts) > 2 else target_template_id # Fallback if format is unexpected
                 
                 # Format the scope with enterprise ID
                 scope_with_id = f"{scope}_{enterprise_id}"
                 
-                logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
+                logger.info(f"Applying as template: Scope={scope_with_id}, Key={template_key}")
                 
                 try:
                     # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
@@ -494,9 +524,28 @@ def apply_metadata_direct():
                         }
             else:
                 # For non-template metadata (freeform), apply as properties
+                
+                # --- BEGIN CONDITIONAL KEY NORMALIZATION ---
+                # Check if normalization is requested via checkbox
+                normalize_keys = st.session_state.get("normalize_keys_checkbox", False) # Default to False if not found
+                
+                if normalize_keys:
+                    logger.info(f"Applying key normalization (removing underscores) for properties metadata.")
+                    normalized_metadata = {}
+                    for key, value in metadata_values.items():
+                        # Specific normalization: remove underscores
+                        normalized_key = key.replace("_", "")
+                        normalized_metadata[normalized_key] = value
+                    metadata_to_apply = normalized_metadata
+                    logger.info(f"Metadata after normalization: {json.dumps(metadata_to_apply, default=str)}")
+                else:
+                    metadata_to_apply = metadata_values # Use original keys
+                    logger.info(f"Skipping key normalization for properties metadata.")
+                # --- END CONDITIONAL KEY NORMALIZATION ---
+                
                 try:
-                    # Apply metadata as properties
-                    metadata = file_obj.metadata("global", "properties").create(metadata_values)
+                    # Apply metadata as properties using metadata_to_apply
+                    metadata = file_obj.metadata("global", "properties").create(metadata_to_apply)
                     logger.info(f"Successfully applied metadata to file {file_name} ({file_id})")
                     return {
                         "file_id": file_id,
