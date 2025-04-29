@@ -459,29 +459,30 @@ def apply_metadata_direct():
                     flattened_metadata = flatten_metadata_for_template(formatted_metadata)
                     logger.info(f"Flattened metadata after flatten_metadata_for_template: {json.dumps(flattened_metadata, default=str)}")
                     
-                    # --- BEGIN VALUE TYPE CONVERSION FOR TEMPLATES ---
-                    metadata_for_api = {}
-                    for key, value in flattened_metadata.items():
-                        if isinstance(value, str):
-                            try:
-                                # Remove commas and attempt conversion to float
-                                cleaned_value = value.replace(",", "")
-                                numeric_value = float(cleaned_value)
-                                metadata_for_api[key] = numeric_value
-                                logger.info(f"Converted value for key 	{key}	 from 	{value}	 to float: {numeric_value}")
-                            except ValueError:
-                                # If conversion fails, keep original string
-                                metadata_for_api[key] = value
-                                logger.info(f"Value for key 	{key}	 kept as string: {value}")
-                        else:
-                            # Keep non-string values as they are
-                            metadata_for_api[key] = value
-                    # --- END VALUE TYPE CONVERSION FOR TEMPLATES ---
+                    # Log the flattened metadata before potential modification
+                    logger.info(f"Flattened metadata before targeted conversion: {json.dumps(flattened_metadata, default=str)}")
+
+                    # --- BEGIN TARGETED VALUE TYPE CONVERSION FOR TEMPLATES ---
+                    metadata_for_api = flattened_metadata.copy() # Start with a copy
+                    target_key = "totalTaxWithheld" # Key to potentially convert
+
+                    if target_key in metadata_for_api and isinstance(metadata_for_api[target_key], str):
+                        value_str = metadata_for_api[target_key]
+                        try:
+                            # Remove commas and attempt conversion to float
+                            cleaned_value = value_str.replace(",", "")
+                            numeric_value = float(cleaned_value)
+                            metadata_for_api[target_key] = numeric_value # Update the dictionary
+                            logger.info(f"Converted value for key 	{target_key}	 from 	{value_str}	 to float: {numeric_value}")
+                        except ValueError:
+                            # If conversion fails, keep original string
+                            logger.info(f"Value for key 	{target_key}	 kept as string: {value_str}")
+                    # --- END TARGETED VALUE TYPE CONVERSION FOR TEMPLATES ---
 
                     # Log the final metadata being sent to Box API
                     logger.info(f"Sending final metadata to Box API (Create): {json.dumps(metadata_for_api, default=str)}")
                     
-                    # Apply metadata using the template with converted values
+                    # Apply metadata using the template with potentially converted value
                     metadata = file_obj.metadata(scope_with_id, template_key).create(metadata_for_api)
                     logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
                     return {
