@@ -459,11 +459,30 @@ def apply_metadata_direct():
                     flattened_metadata = flatten_metadata_for_template(formatted_metadata)
                     logger.info(f"Flattened metadata after flatten_metadata_for_template: {json.dumps(flattened_metadata, default=str)}")
                     
-                    # Log the flattened metadata being sent to Box API
-                    logger.info(f"Sending flattened metadata to Box API: {json.dumps(flattened_metadata, default=str)}")
+                    # --- BEGIN VALUE TYPE CONVERSION FOR TEMPLATES ---
+                    metadata_for_api = {}
+                    for key, value in flattened_metadata.items():
+                        if isinstance(value, str):
+                            try:
+                                # Remove commas and attempt conversion to float
+                                cleaned_value = value.replace(",", "")
+                                numeric_value = float(cleaned_value)
+                                metadata_for_api[key] = numeric_value
+                                logger.info(f"Converted value for key 	{key}	 from 	{value}	 to float: {numeric_value}")
+                            except ValueError:
+                                # If conversion fails, keep original string
+                                metadata_for_api[key] = value
+                                logger.info(f"Value for key 	{key}	 kept as string: {value}")
+                        else:
+                            # Keep non-string values as they are
+                            metadata_for_api[key] = value
+                    # --- END VALUE TYPE CONVERSION FOR TEMPLATES ---
+
+                    # Log the final metadata being sent to Box API
+                    logger.info(f"Sending final metadata to Box API (Create): {json.dumps(metadata_for_api, default=str)}")
                     
-                    # Apply metadata using the template with properly formatted and flattened metadata
-                    metadata = file_obj.metadata(scope_with_id, template_key).create(flattened_metadata)
+                    # Apply metadata using the template with converted values
+                    metadata = file_obj.metadata(scope_with_id, template_key).create(metadata_for_api)
                     logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
                     return {
                         "file_id": file_id,
