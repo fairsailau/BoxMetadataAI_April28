@@ -34,7 +34,7 @@ def get_template_schema(client, scope, template_key):
 
     try:
         logger.info(f"Fetching template schema for {scope}/{template_key}")
-        template = client.metadata_templates.get(scope=scope, template_key=template_key)
+        template = client.metadata_templates.get_metadata_template(scope=scope, template_key=template_key)
         
         if template and template.fields:
             schema_map = {field['key']: field['type'] for field in template.fields}
