@@ -594,13 +594,29 @@ def apply_metadata_direct():
                     "error": "No metadata fields applicable to the template after conversion"
                 }
 
+            # Determine scope parameter for the update call ("enterprise" or "global")
+            if template_scope_str.startswith("enterprise"):
+                scope_param_for_update = "enterprise"
+            elif template_scope_str == "global":
+                scope_param_for_update = "global"
+            else:
+                logger.error(f"Invalid scope string 	{template_scope_str}	 for metadata update.")
+                return {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "success": False,
+                    "error": f"Invalid scope string for update: {template_scope_str}"
+                }
+
             # --- Apply Metadata to Box --- 
             logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
             try:
-                # Using update is generally safer as it handles create/update implicitly
-                # Use the scope string here as required by the file metadata update method
-                metadata_instance = client.file(file_id=file_id).metadata(scope=template_scope_str, template_key=template_key).update(data=converted_metadata)
+                # Corrected SDK v3 call: Use scope="enterprise"/"global" and template=template_key
+                metadata_instance = client.file(file_id=file_id).metadata(
+                    scope=scope_param_for_update, 
+                    template=template_key
+                ).update(data=converted_metadata)
                 logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
