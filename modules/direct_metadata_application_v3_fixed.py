@@ -612,11 +612,11 @@ def apply_metadata_direct():
             logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
             try:
-                # Corrected SDK v3 call: Use scope="enterprise"/"global" and template=template_key
+                # Corrected SDK v3 call: Use .set() to apply the full metadata dictionary
                 metadata_instance = client.file(file_id=file_id).metadata(
                     scope=scope_param_for_update, 
                     template=template_key
-                ).update(data=converted_metadata)
+                ).set(data=converted_metadata)
                 logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
