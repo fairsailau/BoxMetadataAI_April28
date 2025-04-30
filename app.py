@@ -20,7 +20,7 @@ from modules.file_browser import file_browser
 from modules.metadata_config import metadata_config
 from modules.processing import process_files
 from modules.results_viewer import view_results
-from modules.direct_metadata_application_enhanced_fixed import apply_metadata_direct as apply_metadata
+from modules.direct_metadata_application_v3_fixed import apply_metadata_direct as apply_metadata
 from modules.document_categorization import document_categorization
 from modules.metadata_template_retrieval import get_metadata_templates, initialize_template_state
 from modules.user_journey_guide import user_journey_guide, display_step_help
