@@ -612,11 +612,34 @@ def apply_metadata_direct():
             logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
             try:
-                # Corrected SDK v3 call: Use .set() to apply the full metadata dictionary
-                metadata_instance = client.file(file_id=file_id).metadata(
+                # Get the metadata resource object
+                metadata_resource = client.file(file_id=file_id).metadata(
                     scope=scope_param_for_update, 
                     template=template_key
-                ).set(data=converted_metadata)
+                )
+
+                # Check if metadata instance already exists
+                try:
+                    existing_metadata = metadata_resource.get()
+                    logger.info(f"Metadata instance exists for {file_name} ({file_id}), performing update.")
+                    
+                    # Start update and add replace operations using JSON Pointer paths
+                    updates = metadata_resource.start_update()
+                    for key, value in converted_metadata.items():
+                        updates.replace(f"/{key}", value) # Use JSON Pointer format /key
+                    
+                    # Apply the updates
+                    metadata_instance = metadata_resource.update(updates)
+                    
+                except exception.BoxAPIException as e:
+                    if e.status == 404:
+                        # Metadata instance doesn't exist, create it
+                        logger.info(f"Metadata instance does not exist for {file_name} ({file_id}), creating new instance.")
+                        metadata_instance = metadata_resource.create(converted_metadata)
+                    else:
+                        # Re-raise other API errors
+                        raise
+
                 logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
