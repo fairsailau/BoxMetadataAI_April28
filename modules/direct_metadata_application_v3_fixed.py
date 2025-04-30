@@ -48,8 +48,8 @@ def get_template_schema(client, scope_str, template_key):
             return None
 
         logger.info(f"Fetching template schema for {scope_str}/{template_key} using scope parameter '{scope_param}'")
-        # Use the correct scope string parameter for SDK v3
-        template = client.metadata_template.get_metadata_template(scope=scope_param, template_key=template_key)
+        # Use the correct pattern for SDK v3: call metadata_template() then .get()
+        template = client.metadata_template(scope_param, template_key).get()
         
         if template and hasattr(template, 'fields') and template.fields:
             # Extract key and type from the field dictionaries (SDK v3 structure)
