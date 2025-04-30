@@ -2,6 +2,8 @@ import streamlit as st
 import logging
 import json
 from boxsdk import Client, exception
+# Import the necessary enum for scope
+from boxsdk.schemas import GetMetadataTemplateScope 
 from dateutil import parser
 from datetime import timezone
 
@@ -14,45 +16,63 @@ logger = logging.getLogger(__name__)
 if 'template_schema_cache' not in st.session_state:
     st.session_state.template_schema_cache = {}
 
-def get_template_schema(client, scope, template_key):
+def get_template_schema(client, scope_str, template_key):
     """
     Fetches the metadata template schema from Box API.
     Uses a cache to avoid redundant API calls.
+    Handles scope parameter as enum.
     
     Args:
         client: Box client object
-        scope (str): The scope of the template (e.g., 'enterprise_12345')
+        scope_str (str): The scope of the template (e.g., 'enterprise_12345' or 'global')
         template_key (str): The key of the template (e.g., 'invoiceData')
         
     Returns:
         dict: A dictionary mapping field keys to their types, or None if error.
     """
-    cache_key = f'{scope}_{template_key}'
+    cache_key = f'{scope_str}_{template_key}'
     if cache_key in st.session_state.template_schema_cache:
-        logger.info(f"Using cached schema for {scope}/{template_key}")
+        logger.info(f"Using cached schema for {scope_str}/{template_key}")
         return st.session_state.template_schema_cache[cache_key]
 
     try:
-        logger.info(f"Fetching template schema for {scope}/{template_key}")
-        template = client.metadata_templates.get_metadata_template(scope=scope, template_key=template_key)
+        # Determine the correct scope enum based on the scope string
+        if scope_str.startswith('enterprise'):
+            scope_enum = GetMetadataTemplateScope.ENTERPRISE
+        elif scope_str == 'global':
+            scope_enum = GetMetadataTemplateScope.GLOBAL
+        else:
+            # Fallback or handle potential error for unknown scope format
+            logger.error(f"Unknown scope format: {scope_str}. Assuming enterprise scope.")
+            # Defaulting to enterprise might be risky, depends on requirements
+            # Consider raising an error or returning None if scope is invalid
+            scope_enum = GetMetadataTemplateScope.ENTERPRISE 
+            # Or return None: 
+            # st.session_state.template_schema_cache[cache_key] = None
+            # return None
+
+        logger.info(f"Fetching template schema for {scope_str}/{template_key} using scope enum {scope_enum.value}")
+        # Use the correct scope_enum value
+        template = client.metadata_templates.get_metadata_template(scope=scope_enum, template_key=template_key)
         
         if template and template.fields:
-            schema_map = {field['key']: field['type'] for field in template.fields}
+            # Extract key and type from the field objects
+            schema_map = {field.key: field.type for field in template.fields}
             st.session_state.template_schema_cache[cache_key] = schema_map
-            logger.info(f"Successfully fetched and cached schema for {scope}/{template_key}")
+            logger.info(f"Successfully fetched and cached schema for {scope_str}/{template_key}")
             return schema_map
         else:
-            logger.warning(f"Template {scope}/{template_key} found but has no fields.")
+            logger.warning(f"Template {scope_str}/{template_key} found but has no fields or is invalid.")
             st.session_state.template_schema_cache[cache_key] = {}
             return {}
             
     except exception.BoxAPIException as e:
-        logger.error(f"Error fetching template schema for {scope}/{template_key}: {e}")
-        # Cache the error state (None) to avoid retrying constantly
+        logger.error(f"Box API Error fetching template schema for {scope_str}/{template_key}: {e}")
         st.session_state.template_schema_cache[cache_key] = None 
         return None
     except Exception as e:
-        logger.error(f"Unexpected error fetching template schema for {scope}/{template_key}: {e}")
+        # Catching potential AttributeError or other unexpected errors
+        logger.exception(f"Unexpected error fetching template schema for {scope_str}/{template_key}: {e}")
         st.session_state.template_schema_cache[cache_key] = None
         return None
 
@@ -92,7 +112,6 @@ def convert_value_for_template(key, value, field_type):
                  
         elif field_type == 'date':
             # Box expects RFC 3339 format, typically YYYY-MM-DDTHH:MM:SSZ or with offset
-            # The API docs mention storing dates with time as T00:00:00.000Z
             if isinstance(value, str):
                 try:
                     # Parse the date string using dateutil parser (handles various formats)
@@ -514,7 +533,7 @@ def apply_metadata_direct():
                 }
             
             # --- Determine Template and Fetch Schema ---
-            template_scope = None
+            template_scope_str = None
             template_key = None
             doc_type = None # How do we get the doc type? Assume it's stored somewhere or derived.
             
@@ -528,8 +547,8 @@ def apply_metadata_direct():
             # Add more robust logic here based on actual application flow
 
             if doc_type and doc_type in doc_type_to_template_map:
-                template_scope, template_key = doc_type_to_template_map[doc_type]
-                logger.info(f"File {file_name} identified as '{doc_type}', using template {template_scope}/{template_key}")
+                template_scope_str, template_key = doc_type_to_template_map[doc_type]
+                logger.info(f"File {file_name} identified as '{doc_type}', using template {template_scope_str}/{template_key}")
             else:
                 # Fallback or default behavior if no template mapping found
                 logger.warning(f"Could not determine document type or template mapping for {file_name}. Applying as properties metadata.")
@@ -542,19 +561,19 @@ def apply_metadata_direct():
                     "error": f"Could not determine metadata template for document type: {doc_type or 'Unknown'}"
                 }
 
-            # Fetch the template schema
-            template_schema = get_template_schema(client, template_scope, template_key)
+            # Fetch the template schema using the scope string
+            template_schema = get_template_schema(client, template_scope_str, template_key)
             
             if template_schema is None:
-                logger.error(f"Failed to fetch or invalid schema for template {template_scope}/{template_key}. Cannot apply metadata.")
+                logger.error(f"Failed to fetch or invalid schema for template {template_scope_str}/{template_key}. Cannot apply metadata.")
                 return {
                     "file_id": file_id,
                     "file_name": file_name,
                     "success": False,
-                    "error": f"Failed to fetch schema for template {template_scope}/{template_key}"
+                    "error": f"Failed to fetch schema for template {template_scope_str}/{template_key}"
                 }
             elif not template_schema:
-                 logger.warning(f"Template schema for {template_scope}/{template_key} is empty. Applying metadata without type conversion.")
+                 logger.warning(f"Template schema for {template_scope_str}/{template_key} is empty. Applying metadata without type conversion.")
                  converted_metadata = metadata_values.copy()
             else:
                 # --- Convert values based on schema ---
@@ -569,7 +588,7 @@ def apply_metadata_direct():
                         else:
                             logger.warning(f"Skipping key '{key}' due to conversion issue (original: {value!r}).")
                     else:
-                        logger.warning(f"Key '{key}' from extracted metadata not found in template {template_scope}/{template_key}. Skipping this field.")
+                        logger.warning(f"Key '{key}' from extracted metadata not found in template {template_scope_str}/{template_key}. Skipping this field.")
             
             if not converted_metadata:
                 logger.warning(f"No metadata fields remaining after type conversion and validation for {file_name} ({file_id}).")
@@ -581,11 +600,12 @@ def apply_metadata_direct():
                 }
 
             # --- Apply Metadata to Box --- 
-            logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope}/{template_key}: {json.dumps(converted_metadata, default=str)}")
+            logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
             try:
                 # Using update is generally safer as it handles create/update implicitly
-                metadata_instance = client.file(file_id=file_id).metadata(scope=template_scope, template_key=template_key).update(data=converted_metadata)
+                # Use the scope string here as required by the file metadata update method
+                metadata_instance = client.file(file_id=file_id).metadata(scope=template_scope_str, template_key=template_key).update(data=converted_metadata)
                 logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
@@ -595,12 +615,15 @@ def apply_metadata_direct():
                 }
             except exception.BoxAPIException as e:
                 logger.error(f"Box API Error applying template metadata for {file_name} ({file_id}): {e}")
+                # Provide more detailed error info if available
+                error_details = e.context_info or {}
+                error_message = e.message or "Unknown Box API Error"
                 return {
                     "file_id": file_id,
                     "file_name": file_name,
                     "success": False,
-                    "error": f"Box API Error: {e.message} (Status: {e.status}, Code: {e.code})",
-                    "details": e.context_info
+                    "error": f"Box API Error: {error_message} (Status: {e.status}, Code: {e.code})",
+                    "details": error_details
                 }
 
         except Exception as e:
