@@ -1,168 +1,14 @@
 import streamlit as st
 import logging
 import json
-from boxsdk import Client, exception
-# Import the necessary enum for scope
-from boxsdk.schemas import GetMetadataTemplateScope 
-from dateutil import parser
-from datetime import timezone
+from boxsdk import Client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Cache for template schemas to avoid repeated API calls
-if 'template_schema_cache' not in st.session_state:
-    st.session_state.template_schema_cache = {}
-
-def get_template_schema(client, scope_str, template_key):
-    """
-    Fetches the metadata template schema from Box API.
-    Uses a cache to avoid redundant API calls.
-    Handles scope parameter as enum.
-    
-    Args:
-        client: Box client object
-        scope_str (str): The scope of the template (e.g., 'enterprise_12345' or 'global')
-        template_key (str): The key of the template (e.g., 'invoiceData')
-        
-    Returns:
-        dict: A dictionary mapping field keys to their types, or None if error.
-    """
-    cache_key = f'{scope_str}_{template_key}'
-    if cache_key in st.session_state.template_schema_cache:
-        logger.info(f"Using cached schema for {scope_str}/{template_key}")
-        return st.session_state.template_schema_cache[cache_key]
-
-    try:
-        # Determine the correct scope enum based on the scope string
-        if scope_str.startswith('enterprise'):
-            scope_enum = GetMetadataTemplateScope.ENTERPRISE
-        elif scope_str == 'global':
-            scope_enum = GetMetadataTemplateScope.GLOBAL
-        else:
-            # Fallback or handle potential error for unknown scope format
-            logger.error(f"Unknown scope format: {scope_str}. Assuming enterprise scope.")
-            # Defaulting to enterprise might be risky, depends on requirements
-            # Consider raising an error or returning None if scope is invalid
-            scope_enum = GetMetadataTemplateScope.ENTERPRISE 
-            # Or return None: 
-            # st.session_state.template_schema_cache[cache_key] = None
-            # return None
-
-        logger.info(f"Fetching template schema for {scope_str}/{template_key} using scope enum {scope_enum.value}")
-        # Use the correct scope_enum value
-        template = client.metadata_templates.get_metadata_template(scope=scope_enum, template_key=template_key)
-        
-        if template and template.fields:
-            # Extract key and type from the field objects
-            schema_map = {field.key: field.type for field in template.fields}
-            st.session_state.template_schema_cache[cache_key] = schema_map
-            logger.info(f"Successfully fetched and cached schema for {scope_str}/{template_key}")
-            return schema_map
-        else:
-            logger.warning(f"Template {scope_str}/{template_key} found but has no fields or is invalid.")
-            st.session_state.template_schema_cache[cache_key] = {}
-            return {}
-            
-    except exception.BoxAPIException as e:
-        logger.error(f"Box API Error fetching template schema for {scope_str}/{template_key}: {e}")
-        st.session_state.template_schema_cache[cache_key] = None 
-        return None
-    except Exception as e:
-        # Catching potential AttributeError or other unexpected errors
-        logger.exception(f"Unexpected error fetching template schema for {scope_str}/{template_key}: {e}")
-        st.session_state.template_schema_cache[cache_key] = None
-        return None
-
-def convert_value_for_template(key, value, field_type):
-    """
-    Converts a metadata value to the type specified by the template field.
-
-    Args:
-        key (str): The metadata field key.
-        value: The original value.
-        field_type (str): The target field type ('string', 'float', 'date', 'enum', 'multiSelect').
-
-    Returns:
-        Converted value or original value if conversion fails or type is unknown.
-    """
-    if value is None:
-        return None # Keep None as None
-        
-    original_value_repr = repr(value) # For logging
-
-    try:
-        if field_type == 'float':
-            # Try converting to float. Handle potential strings like '5,000.00' or '$5000'
-            if isinstance(value, str):
-                # Remove common currency symbols and commas
-                cleaned_value = value.replace('$', '').replace(',', '')
-                try:
-                    return float(cleaned_value)
-                except ValueError:
-                    logger.warning(f"Could not convert string '{value}' to float for key '{key}'. Keeping original.")
-                    return value # Keep original if conversion fails
-            elif isinstance(value, (int, float)):
-                return float(value) # Already a number
-            else:
-                 logger.warning(f"Value {original_value_repr} for key '{key}' is not a string or number, cannot convert to float. Keeping original.")
-                 return value
-                 
-        elif field_type == 'date':
-            # Box expects RFC 3339 format, typically YYYY-MM-DDTHH:MM:SSZ or with offset
-            if isinstance(value, str):
-                try:
-                    # Parse the date string using dateutil parser (handles various formats)
-                    dt = parser.parse(value)
-                    # Format as YYYY-MM-DDTHH:MM:SSZ (UTC)
-                    # If timezone naive, assume UTC. If timezone aware, convert to UTC.
-                    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    else:
-                        dt = dt.astimezone(timezone.utc)
-                    # Format to RFC3339 with Z for UTC
-                    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                except (parser.ParserError, ValueError) as e:
-                    logger.warning(f"Could not parse date string '{value}' for key '{key}': {e}. Keeping original.")
-                    return value # Keep original if parsing fails
-            else:
-                logger.warning(f"Value {original_value_repr} for key '{key}' is not a string, cannot convert to date. Keeping original.")
-                return value
-                
-        elif field_type == 'string' or field_type == 'enum':
-            # Ensure the value is a string
-            if not isinstance(value, str):
-                logger.info(f"Converting value {original_value_repr} to string for key '{key}' (type {field_type}).")
-                return str(value)
-            return value # Already a string
-            
-        elif field_type == 'multiSelect':
-            # Box expects a list of strings for multiSelect
-            if isinstance(value, list):
-                # Ensure all items in the list are strings
-                converted_list = [str(item) for item in value]
-                if converted_list != value:
-                     logger.info(f"Converting items in list {original_value_repr} to string for key '{key}' (type multiSelect).")
-                return converted_list
-            elif isinstance(value, str):
-                # Treat it as a single selection in a list
-                logger.info(f"Converting string value {original_value_repr} to list of strings for key '{key}' (type multiSelect).")
-                return [value]
-            else:
-                # Convert other types to a list containing the string representation
-                logger.info(f"Converting value {original_value_repr} to list of strings for key '{key}' (type multiSelect).")
-                return [str(value)]
-                
-        else:
-            # Unknown field type, return original value
-            logger.warning(f"Unknown field type '{field_type}' for key '{key}'. Keeping original value {original_value_repr}.")
-            return value
-            
-    except Exception as e:
-        logger.error(f"Unexpected error converting value {original_value_repr} for key '{key}' (type {field_type}): {e}. Keeping original.")
-        return value
+# --- Functions copied from the working repository (MetadataAI-April29) --- 
 
 def fix_metadata_format(metadata_values):
     """
@@ -179,10 +25,10 @@ def fix_metadata_format(metadata_values):
     
     for key, value in metadata_values.items():
         # If the value is a string that looks like a dictionary, parse it
-        if isinstance(value, str) and value.startswith('{') and value.endswith('}'):
+        if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
             try:
                 # Replace single quotes with double quotes for JSON compatibility
-                json_compatible_str = value.replace("'", '"')
+                json_compatible_str = value.replace("\"", "\"") # Use double quotes for replacement
                 # Parse the string representation into a proper Python dictionary
                 parsed_value = json.loads(json_compatible_str)
                 formatted_metadata[key] = parsed_value
@@ -197,7 +43,7 @@ def fix_metadata_format(metadata_values):
 
 def flatten_metadata_for_template(metadata_values):
     """
-    Flatten the metadata structure by extracting fields from the 'answer' object
+    Flatten the metadata structure by extracting fields from the \'answer\' object
     and placing them directly at the top level to match the template structure.
     
     Args:
@@ -208,498 +54,469 @@ def flatten_metadata_for_template(metadata_values):
     """
     flattened_metadata = {}
     
-    # Check if 'answer' exists and is a dictionary
-    if 'answer' in metadata_values and isinstance(metadata_values['answer'], dict):
-        # Extract fields from the 'answer' object and place them at the top level
-        for key, value in metadata_values['answer'].items():
+    # Check if \'answer\' exists and is a dictionary
+    if "answer" in metadata_values and isinstance(metadata_values["answer"], dict):
+        # Extract fields from the \'answer\' object and place them at the top level
+        for key, value in metadata_values["answer"].items():
             flattened_metadata[key] = value
     else:
-        # If there's no 'answer' object, use the original metadata
+        # If there\'s no \'answer\' object, use the original metadata
         flattened_metadata = metadata_values.copy()
     
-    # Remove any non-template fields that shouldn't be sent to Box API
+    # Remove any non-template fields that shouldn\'t be sent to Box API
     # These are fields that are used internally but not part of the template
-    keys_to_remove = ['ai_agent_info', 'created_at', 'completion_reason', 'answer']
+    keys_to_remove = ["ai_agent_info", "created_at", "completion_reason", "answer"]
     for key in keys_to_remove:
         if key in flattened_metadata:
             del flattened_metadata[key]
-    
+            
+    # CRITICAL: Also remove confidence fields here before sending to Box
+    confidence_keys = [key for key in flattened_metadata if key.endswith("_confidence")]
+    for key in confidence_keys:
+        del flattened_metadata[key]
+        logger.info(f"Removed confidence field {key} during flattening.")
+
     return flattened_metadata
 
-def filter_confidence_fields(metadata_values):
+# Function to check if a value is a placeholder
+def is_placeholder(value):
+    """Check if a value appears to be a placeholder"""
+    if not isinstance(value, str):
+        return False
+        
+    placeholder_indicators = [
+        "insert", "placeholder", "<", ">", "[", "]", 
+        "enter", "fill in", "your", "example"
+    ]
+    
+    value_lower = value.lower()
+    return any(indicator in value_lower for indicator in placeholder_indicators)
+
+# --- End of functions copied from the working repository --- 
+
+# Updated apply_metadata_to_file_direct incorporating logic from the working repository
+def apply_metadata_to_file_direct(client, file_id, metadata_values, normalize_keys=True, filter_placeholders=True, file_id_to_file_name=None):
     """
-    Filter out confidence score fields from metadata values.
+    Apply metadata to a single file with direct client reference
+    (Incorporates logic from MetadataAI-April29 for metadata preparation)
     
     Args:
-        metadata_values (dict): The original metadata values dictionary
+        client: Box client object
+        file_id: File ID to apply metadata to
+        metadata_values: Dictionary of metadata values to apply (should contain the actual values, not confidence)
+        normalize_keys: Whether to normalize keys (lowercase, replace spaces with underscores)
+        filter_placeholders: Whether to filter out placeholder values
+        file_id_to_file_name: Optional dictionary mapping file IDs to file names
         
     Returns:
-        dict: A new dictionary with confidence fields removed
+        dict: Result of metadata application
     """
-    filtered_metadata = {}
-    
-    for key, value in metadata_values.items():
-        # Skip any keys that end with "_confidence"
-        if not key.endswith("_confidence"):
-            filtered_metadata[key] = value
-    
-    return filtered_metadata
-
-def apply_metadata_direct():
-    """
-    Direct approach to apply metadata to Box files with type conversion based on template schema.
-    """
-    st.title("Apply Metadata")
-    
-    # Debug checkbox
-    debug_mode = st.sidebar.checkbox("Debug Session State", key="debug_checkbox")
-    if debug_mode:
-        st.sidebar.write("### Session State Debug")
-        st.sidebar.write("**Session State Keys:**")
-        st.sidebar.write(list(st.session_state.keys()))
-        
-        if "client" in st.session_state:
-            st.sidebar.write("**Client:** Available")
-            try:
-                user = st.session_state.client.user().get()
-                st.sidebar.write(f"**Authenticated as:** {user.name}")
-            except Exception as e:
-                st.sidebar.write(f"**Client Error:** {str(e)}")
-        else:
-            st.sidebar.write("**Client:** Not available")
-            
-        if "processing_state" in st.session_state:
-            st.sidebar.write("**Processing State Keys:**")
-            st.sidebar.write(list(st.session_state.processing_state.keys()))
-            
-            # Dump the first processing result for debugging
-            if st.session_state.processing_state:
-                first_key = next(iter(st.session_state.processing_state))
-                st.sidebar.write(f"**First Processing Result ({first_key}):**")
-                st.sidebar.json(st.session_state.processing_state[first_key])
-    
-    # Check if client exists directly
-    if 'client' not in st.session_state:
-        st.error("Box client not found. Please authenticate first.")
-        if st.button("Go to Authentication", key="go_to_auth_btn"):
-            st.session_state.current_page = "Home"  # Assuming Home page has authentication
-            st.rerun()
-        return
-    
-    # Get client directly
-    client = st.session_state.client
-    
-    # Verify client is working
     try:
-        user = client.user().get()
-        logger.info(f"Verified client authentication as {user.name}")
-        st.success(f"Authenticated as {user.name}")
-    except Exception as e:
-        logger.error(f"Error verifying client: {str(e)}")
-        st.error(f"Authentication error: {str(e)}. Please re-authenticate.")
-        if st.button("Go to Authentication", key="go_to_auth_error_btn"):
-            st.session_state.current_page = "Home"
-            st.rerun()
-        return
-    
-    # Check if processing state exists
-    if "processing_state" not in st.session_state or not st.session_state.processing_state:
-        st.warning("No processing results available. Please process files first.")
-        if st.button("Go to Process Files", key="go_to_process_files_btn"):
-            st.session_state.current_page = "Process Files"
-            st.rerun()
-        return
-    
-    # Debug the structure of processing_state
-    processing_state = st.session_state.processing_state
-    logger.info(f"Processing state keys: {list(processing_state.keys())}")
-    
-    # Add debug dump to sidebar
-    st.sidebar.write("🔍 RAW processing_state")
-    st.sidebar.json(processing_state)
-    
-    # Extract file IDs and metadata from processing_state
-    available_file_ids = []
-    
-    # Check if we have any selected files in session state
-    if "selected_files" in st.session_state and st.session_state.selected_files:
-        selected_files = st.session_state.selected_files
-        logger.info(f"Found {len(selected_files)} selected files in session state")
-        for file_info in selected_files:
-            if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
-                file_id = str(file_info["id"])
-                file_name = file_info.get("name", "Unknown")
-                available_file_ids.append(file_id)
-                logger.info(f"Added file ID {file_id} from selected_files")
-    
-    # Pull out the real per‐file results dict
-    results_map = processing_state.get("results", {})
-    logger.info(f"Results map keys: {list(results_map.keys())}")
-    
-    file_id_to_metadata = {}
-    file_id_to_file_name = {}
-    
-    # Initialize file_id_to_file_name from selected_files
-    if "selected_files" in st.session_state and st.session_state.selected_files:
-        for i, file_info in enumerate(st.session_state.selected_files):
-            if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
-                file_id = str(file_info["id"])
-                file_id_to_file_name[file_id] = file_info.get("name", f"File {file_id}")
-    
-    for raw_id, payload in results_map.items():
-        file_id = str(raw_id)
-        # Ensure file_id is added even if only from results_map
-        if file_id not in available_file_ids:
-             available_file_ids.append(file_id)
-             logger.info(f"Added file ID {file_id} from results_map")
-
-        # Most APIs put your AI fields under payload["results"]
-        metadata = payload.get("results", payload)
+        # Initialize file_id_to_file_name if not provided
+        if file_id_to_file_name is None:
+            file_id_to_file_name = {}
         
-        # If metadata is a string that looks like JSON, try to parse it
-        if isinstance(metadata, str):
-            try:
-                parsed_metadata = json.loads(metadata)
-                if isinstance(parsed_metadata, dict):
-                    metadata = parsed_metadata
-            except json.JSONDecodeError:
-                pass # Not valid JSON, keep as is
+        file_name = file_id_to_file_name.get(file_id, "Unknown")
         
-        # If payload has an 'answer' field that's a JSON string, parse it
-        if isinstance(payload, dict) and 'answer' in payload and isinstance(payload['answer'], str):
-            try:
-                parsed_answer = json.loads(payload['answer'])
-                if isinstance(parsed_answer, dict):
-                    # Prefer 'answer' if it parses correctly as a dict
-                    metadata = parsed_answer 
-            except json.JSONDecodeError:
-                pass # Not valid JSON, keep original metadata
+        # CRITICAL FIX: Validate metadata values
+        if not metadata_values:
+            logger.error(f"No metadata found for file {file_name} ({file_id})")
+            return {
+                "file_id": file_id,
+                "file_name": file_name,
+                "success": False,
+                "error": "No metadata found for this file"
+            }
         
-        # Ensure metadata is a dictionary before proceeding
-        if not isinstance(metadata, dict):
-            logger.warning(f"Metadata for file {file_id} is not a dictionary: {repr(metadata)}. Skipping.")
-            continue # Skip this file if metadata is not a dict
-            
-        file_id_to_metadata[file_id] = metadata
-        logger.info(f"Extracted metadata for {file_id}: {metadata!r}")
-    
-    # Remove duplicates while preserving order
-    available_file_ids = list(dict.fromkeys(available_file_ids))
-    
-    # Debug logging
-    logger.info(f"Available file IDs: {available_file_ids}")
-    logger.info(f"File ID to file name mapping: {file_id_to_file_name}")
-    logger.info(f"File ID to metadata mapping: {list(file_id_to_metadata.keys())}")
-    
-    st.write("Apply extracted metadata to your Box files.")
-    
-    # Display selected files
-    st.subheader("Selected Files")
-    
-    if not available_file_ids:
-        st.error("No file IDs available for metadata application. Please process files first.")
-        if st.button("Go to Process Files", key="go_to_process_files_error_btn"):
-            st.session_state.current_page = "Process Files"
-            st.rerun()
-        return
-    
-    st.write(f"You have selected {len(available_file_ids)} files for metadata application.")
-    
-    with st.expander("View Selected Files"):
-        for file_id in available_file_ids:
-            file_name = file_id_to_file_name.get(file_id, "Unknown")
-            st.write(f"- {file_name} ({file_id})")
-    
-    # Metadata application options
-    st.subheader("Application Options")
-    
-    # For freeform extraction
-    st.write("Extracted metadata will be applied based on matching template fields.")
-    
-    # Option to filter placeholder values
-    filter_placeholders = st.checkbox(
-        "Filter placeholder values",
-        value=True,
-        help="If checked, placeholder values like 'insert date' will be filtered out.",
-        key="filter_placeholders_checkbox"
-    )
-    
-    # Batch size (simplified to just 1)
-    st.subheader("Batch Processing Options")
-    st.write("Using single file processing for reliability.")
-    
-    # Operation timeout
-    timeout_seconds = st.slider(
-        "Operation Timeout (seconds)",
-        min_value=10,
-        max_value=300,
-        value=60,
-        help="Maximum time to wait for each operation to complete.",
-        key="timeout_slider"
-    )
-    
-    # Apply metadata button
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        apply_button = st.button(
-            "Apply Metadata",
-            use_container_width=True,
-            key="apply_metadata_btn"
-        )
-    
-    with col2:
-        cancel_button = st.button(
-            "Cancel",
-            use_container_width=True,
-            key="cancel_btn"
-        )
-    
-    # Progress tracking
-    progress_container = st.container()
-    
-    # Function to check if a value is a placeholder
-    def is_placeholder(value):
-        """Check if a value appears to be a placeholder"""
-        if not isinstance(value, str):
-            return False
-            
-        placeholder_indicators = [
-            "insert", "placeholder", "<", ">", "[", "]", 
-            "enter", "fill in", "your", "example"
-        ]
+        # Log original metadata values for debugging
+        logger.info(f"Original metadata values for file {file_name} ({file_id}): {json.dumps(metadata_values, default=str)}")
         
-        value_lower = value.lower()
-        return any(indicator in value_lower for indicator in placeholder_indicators)
-
-    # Mapping from document type to template scope/key (Example - needs to be configured)
-    # This should ideally be loaded from a config file or environment variables
-    doc_type_to_template_map = {
-        "Loan document": ("enterprise_336904155", "homeLoan"),
-        "Driver License": ("enterprise_336904155", "driverLicense"), # Assuming this template exists
-        # Add other mappings as needed
-    }
-
-    # Direct function to apply metadata to a single file
-    def apply_metadata_to_file_direct(client, file_id, metadata_values):
-        """
-        Apply metadata to a single file with type conversion based on template schema.
+        # --- Metadata Preparation Steps from Working Repo --- 
         
-        Args:
-            client: Box client object
-            file_id: File ID to apply metadata to
-            metadata_values: Dictionary of metadata values to apply
-            
-        Returns:
-            dict: Result of metadata application
-        """
-        try:
-            file_name = file_id_to_file_name.get(file_id, "Unknown")
-            
-            # Validate metadata values
-            if not metadata_values or not isinstance(metadata_values, dict):
-                logger.error(f"Invalid or empty metadata for file {file_name} ({file_id}): {metadata_values!r}")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": "Invalid or empty metadata received"
-                }
-            
-            logger.info(f"Original metadata for {file_name} ({file_id}): {json.dumps(metadata_values, default=str)}")
-            
-            # Flatten metadata if needed (assuming 'answer' structure)
-            # metadata_values = flatten_metadata_for_template(metadata_values) # Apply flattening if structure requires it
-            # logger.info(f"Flattened metadata: {json.dumps(metadata_values, default=str)}")
+        # 1. Fix format (string dicts to actual dicts) - Applied to original values
+        prepared_metadata = fix_metadata_format(metadata_values)
+        logger.info(f"Metadata after fix_metadata_format: {json.dumps(prepared_metadata, default=str)}")
 
-            # Filter out confidence score fields
-            metadata_values = filter_confidence_fields(metadata_values)
-            logger.info(f"Metadata after filtering confidence: {json.dumps(metadata_values, default=str)}")
+        # 2. Filter placeholders if requested - Applied after format fix
+        if filter_placeholders:
+            filtered_metadata_placeholders = {}
+            for key, value in prepared_metadata.items():
+                if not is_placeholder(value):
+                    filtered_metadata_placeholders[key] = value
             
-            # Filter out placeholder values if requested
-            if filter_placeholders:
-                original_count = len(metadata_values)
-                metadata_values = {k: v for k, v in metadata_values.items() if not is_placeholder(v)}
-                if len(metadata_values) < original_count:
-                    logger.info(f"Filtered out {original_count - len(metadata_values)} placeholder values.")
+            if not filtered_metadata_placeholders and prepared_metadata:
+                first_key = next(iter(prepared_metadata))
+                filtered_metadata_placeholders[first_key] = prepared_metadata[first_key]
+                filtered_metadata_placeholders["_note"] = "All other values were placeholders"
             
-            if not metadata_values:
-                logger.warning(f"No valid metadata left for {file_name} ({file_id}) after filtering.")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": "No valid metadata after filtering placeholders/confidence"
-                }
-            
-            # --- Determine Template and Fetch Schema ---
-            template_scope_str = None
-            template_key = None
-            doc_type = None # How do we get the doc type? Assume it's stored somewhere or derived.
-            
-            # Placeholder: Try to get doc_type from existing metadata if available
-            # This part needs refinement based on how doc_type is determined in the app
-            # For now, let's check the file name for clues as a fallback
-            if 'loan' in file_name.lower():
-                doc_type = "Loan document"
-            elif 'license' in file_name.lower() or 'driver' in file_name.lower():
-                 doc_type = "Driver License"
-            # Add more robust logic here based on actual application flow
+            prepared_metadata = filtered_metadata_placeholders
+            logger.info(f"Metadata after placeholder filtering: {json.dumps(prepared_metadata, default=str)}")
 
-            if doc_type and doc_type in doc_type_to_template_map:
-                template_scope_str, template_key = doc_type_to_template_map[doc_type]
-                logger.info(f"File {file_name} identified as '{doc_type}', using template {template_scope_str}/{template_key}")
+        # 3. Normalize keys if requested - Applied after placeholder filtering
+        if normalize_keys:
+            normalized_metadata_keys = {}
+            for key, value in prepared_metadata.items():
+                normalized_key = key.lower().replace(" ", "_").replace("-", "_")
+                normalized_metadata_keys[normalized_key] = value
+            prepared_metadata = normalized_metadata_keys
+            logger.info(f"Metadata after key normalization: {json.dumps(prepared_metadata, default=str)}")
+
+        # 4. Flatten structure for template (removes answer, confidence fields etc.) - Applied after normalization
+        # This step is crucial for template application and also removes confidence fields
+        metadata_for_box = flatten_metadata_for_template(prepared_metadata)
+        logger.info(f"Metadata after flattening (and confidence removal): {json.dumps(metadata_for_box, default=str)}")
+
+        # 5. Convert remaining values to strings for Box API - Applied last
+        final_metadata_for_box = {}
+        for key, value in metadata_for_box.items():
+            if value is None:
+                final_metadata_for_box[key] = "" # Box metadata doesn\'t accept None
+            elif not isinstance(value, str):
+                final_metadata_for_box[key] = str(value)
             else:
-                # Fallback or default behavior if no template mapping found
-                logger.warning(f"Could not determine document type or template mapping for {file_name}. Applying as properties metadata.")
-                # Apply as properties metadata (code for this needs to be added/confirmed)
-                # For now, let's return an error if template cannot be determined
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": f"Could not determine metadata template for document type: {doc_type or 'Unknown'}"
-                }
+                final_metadata_for_box[key] = value
+        logger.info(f"Final metadata prepared for Box API: {json.dumps(final_metadata_for_box, default=str)}")
+        
+        # --- End of Metadata Preparation Steps --- 
 
-            # Fetch the template schema using the scope string
-            template_schema = get_template_schema(client, template_scope_str, template_key)
+        # If no metadata values remain after preparation, return error
+        if not final_metadata_for_box:
+            logger.warning(f"No valid metadata found for file {file_name} ({file_id}) after preparation")
+            return {
+                "file_id": file_id,
+                "file_name": file_name,
+                "success": False,
+                "error": "No valid metadata found after preparation steps"
+            }
+        
+        # Get file object
+        file_obj = client.file(file_id=file_id)
+        
+        # Check if we\'re using structured extraction with a template
+        if "metadata_config" in st.session_state and st.session_state.metadata_config.get("extraction_method") == "structured":
+            # Get document type for this file (if categorized)
+            document_type = None
+            if (
+                hasattr(st.session_state, "document_categorization") and 
+                st.session_state.document_categorization.get("is_categorized", False) and
+                file_id in st.session_state.document_categorization["results"]
+            ):
+                document_type = st.session_state.document_categorization["results"][file_id]["document_type"]
+                logger.info(f"File {file_name} has document type: {document_type}")
             
-            if template_schema is None:
-                logger.error(f"Failed to fetch or invalid schema for template {template_scope_str}/{template_key}. Cannot apply metadata.")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": f"Failed to fetch schema for template {template_scope_str}/{template_key}"
-                }
-            elif not template_schema:
-                 logger.warning(f"Template schema for {template_scope_str}/{template_key} is empty. Applying metadata without type conversion.")
-                 converted_metadata = metadata_values.copy()
-            else:
-                # --- Convert values based on schema ---
-                converted_metadata = {}
-                for key, value in metadata_values.items():
-                    if key in template_schema:
-                        field_type = template_schema[key]
-                        converted_value = convert_value_for_template(key, value, field_type)
-                        # Only include if conversion didn't result in None explicitly (unless original was None)
-                        if converted_value is not None or value is None: 
-                            converted_metadata[key] = converted_value
-                        else:
-                            logger.warning(f"Skipping key '{key}' due to conversion issue (original: {value!r}).")
+            # Get template ID based on document type if available
+            template_id = None
+            
+            # Check if we have a document type and a mapping for it
+            if document_type and hasattr(st.session_state, "document_type_to_template"):
+                mapped_template_id = st.session_state.document_type_to_template.get(document_type)
+                if mapped_template_id and mapped_template_id != "None - Use custom fields":
+                    template_id = mapped_template_id
+                    logger.info(f"Using document type specific template for {document_type}: {template_id}")
+            
+            # If no document type specific template, use the general one
+            if not template_id:
+                template_id = st.session_state.metadata_config.get("template_id", "")
+                logger.info(f"Using general template: {template_id}")
+            
+            # Skip if template_id is "None - Use custom fields" or empty
+            if not template_id or template_id == "None - Use custom fields":
+                logger.info(f"No template selected, using properties metadata instead")
+                # Apply metadata as properties
+                try:
+                    properties_metadata = final_metadata_for_box # Use the fully prepared metadata
+                    logger.info(f"Sending properties metadata to Box API: {json.dumps(properties_metadata, default=str)}")
+                    
+                    metadata = file_obj.metadata("global", "properties").create(properties_metadata)
+                    logger.info(f"Successfully applied properties metadata to file {file_name} ({file_id})")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": True,
+                        "metadata": metadata
+                    }
+                except Exception as e:
+                    if "already exists" in str(e).lower():
+                        try:
+                            properties_metadata = final_metadata_for_box # Use the fully prepared metadata
+                            logger.info(f"Updating properties metadata with: {json.dumps(properties_metadata, default=str)}")
+                            
+                            operations = []
+                            for key, value in properties_metadata.items():
+                                operations.append({
+                                    "op": "replace",
+                                    "path": f"/{key}",
+                                    "value": value
+                                })
+                            
+                            logger.info(f"Properties metadata already exists, updating with operations")
+                            metadata = file_obj.metadata("global", "properties").update(operations)
+                            
+                            logger.info(f"Successfully updated properties metadata for file {file_name} ({file_id})")
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "success": True,
+                                "metadata": metadata
+                            }
+                        except Exception as update_error:
+                            logger.error(f"Error updating properties metadata for file {file_name} ({file_id}): {str(update_error)}")
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "success": False,
+                                "error": f"Error updating properties metadata: {str(update_error)}"
+                            }
                     else:
-                        logger.warning(f"Key '{key}' from extracted metadata not found in template {template_scope_str}/{template_key}. Skipping this field.")
+                        logger.error(f"Error creating properties metadata for file {file_name} ({file_id}): {str(e)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error creating properties metadata: {str(e)}"
+                        }
             
-            if not converted_metadata:
-                logger.warning(f"No metadata fields remaining after type conversion and validation for {file_name} ({file_id}).")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": "No metadata fields applicable to the template after conversion"
-                }
-
-            # --- Apply Metadata to Box --- 
-            logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
+            # Parse the template ID to extract the correct components
+            parts = template_id.split("_")
+            scope = parts[0]
+            enterprise_id = parts[1] if len(parts) > 1 else ""
+            template_key = parts[2] if len(parts) > 2 else parts[-1]
+            scope_with_id = f"{scope}_{enterprise_id}"
+            
+            logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
             
             try:
-                # Using update is generally safer as it handles create/update implicitly
-                # Use the scope string here as required by the file metadata update method
-                metadata_instance = client.file(file_id=file_id).metadata(scope=template_scope_str, template_key=template_key).update(data=converted_metadata)
-                logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
+                template_metadata = final_metadata_for_box # Use the fully prepared metadata
+                logger.info(f"Sending template metadata to Box API: {json.dumps(template_metadata, default=str)}")
+                
+                metadata = file_obj.metadata(scope_with_id, template_key).create(template_metadata)
+                logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
                     "file_name": file_name,
                     "success": True,
-                    "metadata_applied": converted_metadata
+                    "metadata": metadata
                 }
-            except exception.BoxAPIException as e:
-                logger.error(f"Box API Error applying template metadata for {file_name} ({file_id}): {e}")
-                # Provide more detailed error info if available
-                error_details = e.context_info or {}
-                error_message = e.message or "Unknown Box API Error"
+            except Exception as e:
+                if "already exists" in str(e).lower():
+                    try:
+                        template_metadata = final_metadata_for_box # Use the fully prepared metadata
+                        logger.info(f"Updating template metadata with: {json.dumps(template_metadata, default=str)}")
+                        
+                        operations = []
+                        for key, value in template_metadata.items():
+                            operations.append({
+                                "op": "replace",
+                                "path": f"/{key}",
+                                "value": value
+                            })
+                        
+                        logger.info(f"Template metadata already exists, updating with operations")
+                        metadata = file_obj.metadata(scope_with_id, template_key).update(operations)
+                        
+                        logger.info(f"Successfully updated template metadata for file {file_name} ({file_id})")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": True,
+                            "metadata": metadata
+                        }
+                    except Exception as update_error:
+                        logger.error(f"Error updating template metadata for file {file_name} ({file_id}): {str(update_error)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error updating template metadata: {str(update_error)}"
+                        }
+                else:
+                    logger.error(f"Error creating template metadata for file {file_name} ({file_id}): {str(e)}")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Error creating template metadata: {str(e)}"
+                    }
+        else:
+            # Apply metadata as properties (non-structured extraction)
+            try:
+                properties_metadata = final_metadata_for_box # Use the fully prepared metadata
+                logger.info(f"Sending properties metadata (non-structured) to Box API: {json.dumps(properties_metadata, default=str)}")
+                
+                metadata = file_obj.metadata("global", "properties").create(properties_metadata)
+                logger.info(f"Successfully applied properties metadata (non-structured) to file {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
                     "file_name": file_name,
-                    "success": False,
-                    "error": f"Box API Error: {error_message} (Status: {e.status}, Code: {e.code})",
-                    "details": error_details
+                    "success": True,
+                    "metadata": metadata
                 }
+            except Exception as e:
+                if "already exists" in str(e).lower():
+                    try:
+                        properties_metadata = final_metadata_for_box # Use the fully prepared metadata
+                        logger.info(f"Updating properties metadata (non-structured) with: {json.dumps(properties_metadata, default=str)}")
+                        
+                        operations = []
+                        for key, value in properties_metadata.items():
+                            operations.append({
+                                "op": "replace",
+                                "path": f"/{key}",
+                                "value": value
+                            })
+                        
+                        logger.info(f"Properties metadata (non-structured) already exists, updating with operations")
+                        metadata = file_obj.metadata("global", "properties").update(operations)
+                        
+                        logger.info(f"Successfully updated properties metadata (non-structured) for file {file_name} ({file_id})")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": True,
+                            "metadata": metadata
+                        }
+                    except Exception as update_error:
+                        logger.error(f"Error updating properties metadata (non-structured) for file {file_name} ({file_id}): {str(update_error)}")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "success": False,
+                            "error": f"Error updating properties metadata (non-structured): {str(update_error)}"
+                        }
+                else:
+                    logger.error(f"Error creating properties metadata (non-structured) for file {file_name} ({file_id}): {str(e)}")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Error creating properties metadata (non-structured): {str(e)}"
+                    }
+    except Exception as e:
+        logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
+        return {
+            "file_id": file_id,
+            "file_name": file_id_to_file_name.get(file_id, "Unknown"),
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }
 
-        except Exception as e:
-            logger.exception(f"Unexpected error in apply_metadata_to_file_direct for {file_id}: {e}")
-            return {
-                "file_id": file_id,
-                "file_name": file_id_to_file_name.get(file_id, "Unknown"),
-                "success": False,
-                "error": f"Unexpected error: {str(e)}"
-            }
-
-    # Main execution logic when 'Apply Metadata' is clicked
-    if apply_button:
-        st.session_state.apply_results = []
-        st.session_state.apply_errors = []
-        total_files = len(available_file_ids)
-        
-        progress_bar = progress_container.progress(0)
-        status_text = progress_container.empty()
-        
-        for i, file_id in enumerate(available_file_ids):
-            file_name = file_id_to_file_name.get(file_id, "Unknown")
-            status_text.text(f"Processing file {i+1}/{total_files}: {file_name} ({file_id})...")
-            
-            metadata_to_apply = file_id_to_metadata.get(file_id)
-            
-            if not metadata_to_apply:
-                logger.warning(f"No metadata found in mapping for file {file_name} ({file_id}). Skipping.")
-                st.session_state.apply_errors.append({
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "error": "No metadata found in processing results"
-                })
-                continue
+def apply_metadata_direct():
+    """
+    Apply metadata to selected files using the direct client reference
+    """
+    if not hasattr(st.session_state, "selected_result_ids") or not st.session_state.selected_result_ids:
+        st.warning("No files selected for metadata application.")
+        return
+    
+    if not hasattr(st.session_state, "extraction_results") or not st.session_state.extraction_results:
+        st.error("No extraction results available to apply.")
+        return
+    
+    if not hasattr(st.session_state, "client") or not st.session_state.client:
+        st.error("Box client not initialized. Please authenticate.")
+        return
+    
+    client = st.session_state.client
+    results = []
+    
+    # Create file ID to name mapping for better logging
+    file_id_to_name = {}
+    if hasattr(st.session_state, "selected_files"):
+        for file in st.session_state.selected_files:
+            file_id_to_name[file["id"]] = file["name"]
+    
+    # Determine if normalization and placeholder filtering are needed
+    # These could be made configurable later
+    normalize_keys = True
+    filter_placeholders = True
+    
+    with st.spinner("Applying metadata..."):
+        for file_id in st.session_state.selected_result_ids:
+            if file_id in st.session_state.extraction_results:
+                # Get the processed result data (which should contain only values, not confidence)
+                # We need to ensure the data passed here is the actual extracted values
+                # Let\'s re-process from the original result if available
+                original_result = st.session_state.extraction_results[file_id]
                 
-            # Apply metadata to the single file
-            result = apply_metadata_to_file_direct(client, file_id, metadata_to_apply)
-            
-            if result['success']:
-                st.session_state.apply_results.append(result)
+                # Re-extract the actual data values, excluding confidence
+                metadata_to_apply = {}
+                if isinstance(original_result, dict):
+                    if "answer" in original_result:
+                        answer = original_result["answer"]
+                        if isinstance(answer, str):
+                            try:
+                                parsed_answer = json.loads(answer.replace("\"", "\""))
+                                if isinstance(parsed_answer, dict):
+                                    for key, value in parsed_answer.items():
+                                        if isinstance(value, dict) and "value" in value:
+                                            metadata_to_apply[key] = value["value"]
+                                        else:
+                                            metadata_to_apply[key] = value
+                            except json.JSONDecodeError:
+                                metadata_to_apply["extracted_text"] = answer
+                        elif isinstance(answer, dict):
+                             for key, value in answer.items():
+                                if isinstance(value, dict) and "value" in value:
+                                    metadata_to_apply[key] = value["value"]
+                                else:
+                                    metadata_to_apply[key] = value
+                    elif "items" in original_result and isinstance(original_result["items"], list) and len(original_result["items"]) > 0:
+                         # Similar logic as above for items[0]["answer"]
+                         item_answer = original_result["items"][0].get("answer")
+                         if isinstance(item_answer, str):
+                            try:
+                                parsed_answer = json.loads(item_answer.replace("\"", "\""))
+                                if isinstance(parsed_answer, dict):
+                                    for key, value in parsed_answer.items():
+                                        if isinstance(value, dict) and "value" in value:
+                                            metadata_to_apply[key] = value["value"]
+                                        else:
+                                            metadata_to_apply[key] = value
+                            except json.JSONDecodeError:
+                                metadata_to_apply["extracted_text"] = item_answer
+                         elif isinstance(item_answer, dict):
+                             for key, value in item_answer.items():
+                                if isinstance(value, dict) and "value" in value:
+                                    metadata_to_apply[key] = value["value"]
+                                else:
+                                    metadata_to_apply[key] = value
+                    else:
+                        # Assume the dictionary itself contains the metadata, filter confidence
+                        for key, value in original_result.items():
+                            if not key.endswith("_confidence"):
+                                metadata_to_apply[key] = value
+                else:
+                    metadata_to_apply["extracted_text"] = str(original_result)
+                
+                logger.info(f"Metadata extracted for application to file {file_id}: {json.dumps(metadata_to_apply, default=str)}")
+                
+                result = apply_metadata_to_file_direct(
+                    client,
+                    file_id,
+                    metadata_to_apply, # Pass the re-extracted values
+                    normalize_keys=normalize_keys,
+                    filter_placeholders=filter_placeholders,
+                    file_id_to_file_name=file_id_to_name
+                )
+                results.append(result)
             else:
-                st.session_state.apply_errors.append(result)
-            
-            # Update progress
-            progress_bar.progress((i + 1) / total_files)
-        
-        status_text.text(f"Metadata application complete for {total_files} files.")
-        
-        # Display results
-        st.subheader("Application Results")
-        
-        if st.session_state.apply_results:
-            st.success(f"Successfully applied metadata to {len(st.session_state.apply_results)} files.")
-            with st.expander("View Success Details"):
-                for res in st.session_state.apply_results:
-                    st.write(f"- **{res['file_name']} ({res['file_id']})**: Applied {len(res['metadata_applied'])} fields.")
-                    # st.json(res['metadata_applied']) # Optional: show applied data
-        
-        if st.session_state.apply_errors:
-            st.error(f"Failed to apply metadata to {len(st.session_state.apply_errors)} files.")
-            with st.expander("View Error Details"):
-                for err in st.session_state.apply_errors:
-                    st.write(f"- **{err['file_name']} ({err['file_id']})**: {err['error']}")
-                    if 'details' in err and err['details']:
-                         st.json(err['details'])
-
-    if cancel_button:
-        st.warning("Metadata application cancelled.")
-        # Optionally clear state or redirect
-        if 'apply_results' in st.session_state: del st.session_state.apply_results
-        if 'apply_errors' in st.session_state: del st.session_state.apply_errors
-        st.rerun()
-
-# Example usage (if run directly, though it's meant to be called by Streamlit)
-if __name__ == '__main__':
-    # This part is mostly for structure; Streamlit handles the execution flow
-    # You would typically run this via `streamlit run your_app.py`
-    pass
+                results.append({
+                    "file_id": file_id,
+                    "file_name": file_id_to_name.get(file_id, "Unknown"),
+                    "success": False,
+                    "error": "Extraction result not found"
+                })
+    
+    # Display results
+    st.subheader("Metadata Application Results")
+    successful_count = sum(1 for r in results if r["success"])
+    failed_count = len(results) - successful_count
+    
+    if successful_count > 0:
+        st.success(f"Successfully applied metadata to {successful_count} file(s).")
+    if failed_count > 0:
+        st.error(f"Failed to apply metadata to {failed_count} file(s):")
+        for result in results:
+            if not result["success"]:
+                st.write(f"- File: {result["file_name"]} ({result["file_id"]}) - Error: {result["error"]}")
 

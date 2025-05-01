@@ -491,12 +491,12 @@ def view_results():
     st.write(f"Selected {len(st.session_state.selected_result_ids)} of {len(displayed_file_ids)} results")
     
     # Apply Metadata button
-    if st.button("Apply Metadata", use_container_width=True, key="apply_metadata_from_results_btn"):
+    if st.button("Apply Metadata", use_container_width=True, key="apply_metadata_btn"):
         if not st.session_state.selected_result_ids:
             st.warning("Please select at least one file to apply metadata.")
         else:
-            # Navigate to the Apply Metadata page
-            st.session_state.current_page = "Apply Metadata"
-            st.rerun()
+            # Call the direct metadata application function
+            from modules.direct_metadata_application_enhanced_fixed import apply_metadata_direct
+            apply_metadata_direct()
 
 
