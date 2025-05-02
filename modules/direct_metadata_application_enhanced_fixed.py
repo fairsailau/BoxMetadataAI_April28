@@ -301,7 +301,7 @@ def apply_metadata_direct():
         return any(indicator in value_lower for indicator in placeholder_indicators)
     
     # Direct function to apply metadata to a single file
-    def apply_metadata_to_file_direct(client, file_id, metadata_values):
+    def apply_metadata_to_file_direct(client, file_id, metadata_values, doc_type): # Added doc_type
         """
         Apply metadata to a single file with direct client reference
         
@@ -378,54 +378,101 @@ def apply_metadata_direct():
             
             # Check if we're using structured extraction with a template
             if "metadata_config" in st.session_state and st.session_state.metadata_config.get("extraction_method") == "structured" and st.session_state.metadata_config.get("use_template"):
-                # Get template information
-                template_id = st.session_state.metadata_config.get("template_id", "")
-                
+                # --- BEGIN NEW CODE (Template Selection Logic) ---
+                # Get the document type to template mapping from session state
+                doc_type_mapping = st.session_state.get("document_type_to_template", {})
+                # Get the specific template ID based on the document type
+                specific_template_id = doc_type_mapping.get(doc_type)
+
+                # Get the default template ID from config
+                default_template_id = st.session_state.metadata_config.get("template_id", "")
+
+                # Use the specific template ID if found, otherwise fall back to default
+                if specific_template_id:
+                    template_id = specific_template_id
+                    logger.info(f"Using specific template 	'{template_id}	' mapped for document type 	'{doc_type}	'")
+                else:
+                    template_id = default_template_id
+                    logger.warning(f"No specific template mapping found for document type 	'{doc_type}	'. Falling back to default template 	'{template_id}	'")
+
+                if not template_id:
+                    logger.error(f"No template ID found (neither specific nor default) for file {file_name} ({file_id}). Cannot apply template metadata.")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": "No template ID configured or mapped for this document type."
+                    }
+                # --- END NEW CODE (Template Selection Logic) ---
+
                 # Parse the template ID to extract the correct components
-                # Format is typically: scope_id_templateKey (e.g., enterprise_336904155_financialReport)
+                # Format is typically: scope_templateKey (e.g., enterprise_financialReport or enterprise_12345_myTemplate)
+                # We need to handle both formats potentially
                 parts = template_id.split('_')
-                
-                # Extract the scope and enterprise ID
-                scope = parts[0]  # e.g., "enterprise"
-                enterprise_id = parts[1] if len(parts) > 1 else ""
-                
-                # Extract the actual template key (last part)
-                template_key = parts[-1] if len(parts) > 2 else template_id
-                
-                # Format the scope with enterprise ID
-                scope_with_id = f"{scope}_{enterprise_id}"
-                
+                if len(parts) >= 2:
+                    scope = parts[0]
+                    template_key = '_'.join(parts[1:]) # Join the rest as the key might contain underscores
+                    # If the scope looks like 'enterprise_12345', adjust scope and key
+                    if scope.startswith('enterprise') and len(parts) > 2 and parts[1].isdigit():
+                         scope = f"{parts[0]}_{parts[1]}"
+                         template_key = '_'.join(parts[2:])
+                    scope_with_id = scope # Use the potentially adjusted scope
+                else:
+                    # Fallback if format is unexpected
+                    logger.error(f"Unexpected template ID format: {template_id}. Cannot parse scope and key.")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Invalid template ID format: {template_id}"
+                    }
+
                 logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
-                
-                try:
-                    # --- BEGIN NEW CODE ---
-                    # Explicitly fetch the template schema using the correct SDK method
-                    logger.info(f"Attempting to fetch schema for scope='{scope_with_id}', template_key='{template_key}'")
-                    try:
-                        # Use the correct SDK method to get template schema
-                        template_schema = client.metadata_templates.get_metadata_template_by_key(scope=scope_with_id, template_key=template_key)
-                        logger.info(f"Successfully fetched schema for template {template_key}")
-                        # Fetching the schema might resolve underlying issues or confirm client.metadata_templates works.
-                    except Exception as schema_fetch_error:
-                        # Log the specific error during schema fetch
-                        logger.error(f"Error fetching schema for template {template_key}: {str(schema_fetch_error)}")
-                        # Log and proceed for now, as the original error might be elsewhere.
-
-                    # --- END NEW CODE ---
-
+                               try:
                     # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
-                    formatted_metadata = fix_metadata_format(metadata_values)
-                    logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
+                    formatted_metadata = fix_metadata_format(metadata_values)                   logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
                     
                     # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
                     flattened_metadata = flatten_metadata_for_template(formatted_metadata)
                     logger.info(f"Flattened metadata after flatten_metadata_for_template: {json.dumps(flattened_metadata, default=str)}")
                     
-                    # Log the flattened metadata being sent to Box API
-                    logger.info(f"Sending flattened metadata to Box API: {json.dumps(flattened_metadata, default=str)}")
-                    
-                    # Apply metadata using the template with properly formatted and flattened metadata
-                    metadata = file_obj.metadata(scope_with_id, template_key).create(flattened_metadata)
+                          # --- BEGIN NEW CODE ---
+                        # Get the template schema from session state
+                        template_schemas = st.session_state.get("metadata_templates", {})
+                        # Assuming template_id from session state is the full key like 'enterprise_123_myTemplate'
+                        template_full_id = template_id
+
+                        if template_full_id not in template_schemas:
+                            logger.error(f"Template schema for {template_full_id} not found in session state. Cannot filter fields.")
+                            raise ValueError(f"Schema for template {template_full_id} not found in session state.")
+
+                        template_schema = template_schemas[template_full_id]
+                        valid_field_keys = {field["key"] for field in template_schema.get("fields", [])}
+                        logger.info(f"Valid field keys for template {template_full_id}: {valid_field_keys}")
+
+                        # Filter flattened_metadata to include only keys present in the template schema
+                        filtered_metadata = {
+                            key: value for key, value in flattened_metadata.items()
+                            if key in valid_field_keys
+                        }
+
+                        if not filtered_metadata:
+                            logger.warning(f"No valid fields found for template {template_full_id} after filtering metadata for file {file_name} ({file_id}). Skipping application.")
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "success": False,
+                                "error": f"No metadata fields matched the template schema {template_full_id}."
+                            }
+
+                        logger.info(f"Filtered metadata matching template schema: {json.dumps(filtered_metadata, default=str)}")
+                        # --- END NEW CODE ---
+
+                        # Log the filtered metadata being sent to Box API
+                        logger.info(f"Sending filtered metadata to Box API: {json.dumps(filtered_metadata, default=str)}") # Changed from flattened_metadata
+
+                        # Apply metadata using the template with properly formatted and filtered metadata
+                        metadata = file_obj.metadata(scope_with_id, template_key).create(filtered_metadata) # Changed from flattened_metadataa)
                     logger.info(f"Successfully applied template metadata to file {file_name} ({file_id})")
                     return {
                         "file_id": file_id,
@@ -445,17 +492,48 @@ def apply_metadata_direct():
                             flattened_metadata = flatten_metadata_for_template(formatted_metadata)
                             logger.info(f"Flattened metadata after flatten_metadata_for_template (update path): {json.dumps(flattened_metadata, default=str)}")
                             
-                            # Log the flattened metadata being sent to Box API
-                            logger.info(f"Updating with flattened metadata: {json.dumps(flattened_metadata, default=str)}")
-                            
-                            # Create update operations with flattened metadata
+                             # --- BEGIN NEW CODE (Update Path) ---
+                            # Get the template schema from session state
+                            template_schemas = st.session_state.get("metadata_templates", {})
+                            template_full_id = template_id
+
+                            if template_full_id not in template_schemas:
+                                logger.error(f"Template schema for {template_full_id} not found in session state (update path). Cannot filter fields.")
+                                raise ValueError(f"Schema for template {template_full_id} not found in session state (update path).")
+
+                            template_schema = template_schemas[template_full_id]
+                            valid_field_keys = {field["key"] for field in template_schema.get("fields", [])}
+                            logger.info(f"Valid field keys for template {template_full_id} (update path): {valid_field_keys}")
+
+                            # Filter flattened_metadata to include only keys present in the template schema
+                            filtered_metadata = {
+                                key: value for key, value in flattened_metadata.items()
+                                if key in valid_field_keys
+                            }
+
+                            if not filtered_metadata:
+                                logger.warning(f"No valid fields found for template {template_full_id} after filtering metadata for file {file_name} ({file_id}) (update path). Skipping update.")
+                                return {
+                                    "file_id": file_id,
+                                    "file_name": file_name,
+                                    "success": False,
+                                    "error": f"No metadata fields matched the template schema {template_full_id} during update."
+                                }
+
+                            logger.info(f"Filtered metadata matching template schema (update path): {json.dumps(filtered_metadata, default=str)}")
+                            # --- END NEW CODE (Update Path) ---
+
+                            # Log the filtered metadata being sent to Box API
+                            logger.info(f"Updating with filtered metadata: {json.dumps(filtered_metadata, default=str)}") # Changed from flattened_metadata
+
+                            # Create update operations with filtered metadata
                             operations = []
-                            for key, value in flattened_metadata.items():
+                            for key, value in filtered_metadata.items(): # Changed from flattened_metadata
                                 operations.append({
                                     "op": "replace",
                                     "path": f"/{key}",
                                     "value": value
-                                })
+                                })                         })
                             
                             # Update metadata
                             logger.info(f"Template metadata already exists, updating with operations: {json.dumps(operations, default=str)}")
@@ -575,8 +653,14 @@ def apply_metadata_direct():
             # CRITICAL FIX: Log the metadata values before application
             logger.info(f"Metadata values for file {file_name} ({file_id}) before application: {json.dumps(metadata_values, default=str)}")
             
-            # Apply metadata directly
-            result = apply_metadata_to_file_direct(client, file_id, metadata_values)
+            # Get document type for mapping
+            categorization_results = st.session_state.get("document_categorization", {}).get("results", {})
+            # Use str(file_id) for lookup consistency
+            doc_type = categorization_results.get(str(file_id), {}).get("category", "Other") # Default to 'Other'
+            logger.info(f"Retrieved document type 	'{doc_type}	' for file {file_id}")
+
+            # Apply metadata directly, passing the document type
+            result = apply_metadata_to_file_direct(client, file_id, metadata_values, doc_type)
             
             if result["success"]:
                 results.append(result)
