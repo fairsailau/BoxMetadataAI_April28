@@ -48,8 +48,8 @@ def get_template_schema(client, scope_str, template_key):
             return None
 
         logger.info(f"Fetching template schema for {scope_str}/{template_key} using scope parameter '{scope_param}'")
-        # Use the correct pattern for SDK v3: call metadata_template() then .get()
-        template = client.metadata_template(scope_param, template_key).get()
+        # Use the correct scope string parameter for SDK v3
+        template = client.metadata_templates.get_metadata_template(scope=scope_param, template_key=template_key)
         
         if template and hasattr(template, 'fields') and template.fields:
             # Extract key and type from the field dictionaries (SDK v3 structure)
@@ -594,52 +594,13 @@ def apply_metadata_direct():
                     "error": "No metadata fields applicable to the template after conversion"
                 }
 
-            # Determine scope parameter for the update call ("enterprise" or "global")
-            if template_scope_str.startswith("enterprise"):
-                scope_param_for_update = "enterprise"
-            elif template_scope_str == "global":
-                scope_param_for_update = "global"
-            else:
-                logger.error(f"Invalid scope string 	{template_scope_str}	 for metadata update.")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": f"Invalid scope string for update: {template_scope_str}"
-                }
-
             # --- Apply Metadata to Box --- 
             logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
             try:
-                # Get the metadata resource object
-                metadata_resource = client.file(file_id=file_id).metadata(
-                    scope=scope_param_for_update, 
-                    template=template_key
-                )
-
-                # Check if metadata instance already exists
-                try:
-                    existing_metadata = metadata_resource.get()
-                    logger.info(f"Metadata instance exists for {file_name} ({file_id}), performing update.")
-                    
-                    # Start update and add replace operations using JSON Pointer paths
-                    updates = metadata_resource.start_update()
-                    for key, value in converted_metadata.items():
-                        updates.replace(f"/{key}", value) # Use JSON Pointer format /key
-                    
-                    # Apply the updates
-                    metadata_instance = metadata_resource.update(updates)
-                    
-                except exception.BoxAPIException as e:
-                    if e.status == 404:
-                        # Metadata instance doesn't exist, create it
-                        logger.info(f"Metadata instance does not exist for {file_name} ({file_id}), creating new instance.")
-                        metadata_instance = metadata_resource.create(converted_metadata)
-                    else:
-                        # Re-raise other API errors
-                        raise
-
+                # Using update is generally safer as it handles create/update implicitly
+                # Use the scope string here as required by the file metadata update method
+                metadata_instance = client.file(file_id=file_id).metadata(scope=template_scope_str, template_key=template_key).update(data=converted_metadata)
                 logger.info(f"Successfully applied/updated template metadata for {file_name} ({file_id})")
                 return {
                     "file_id": file_id,
@@ -736,4 +697,3 @@ if __name__ == '__main__':
     # This part is mostly for structure; Streamlit handles the execution flow
     # You would typically run this via `streamlit run your_app.py`
     pass
-
