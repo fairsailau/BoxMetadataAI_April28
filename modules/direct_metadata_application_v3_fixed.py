@@ -535,7 +535,7 @@ def apply_metadata_direct():
             # --- NEW FIX: Get doc_type from categorization results --- 
             categorization_results = st.session_state.get("document_categorization", {}).get("results", {})
             # Use str(file_id) for lookup consistency
-            doc_type = categorization_results.get(str(file_id), {}).get("category")
+            doc_type = categorization_results.get(str(file_id), {}).get("document_type") # FIX: Use 'document_type' key
             if doc_type:
                 logger.info(f"Retrieved document type 	'{doc_type}'	 from categorization results for file {file_id}")
             else:
