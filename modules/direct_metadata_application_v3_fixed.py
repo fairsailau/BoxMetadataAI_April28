@@ -530,31 +530,72 @@ def apply_metadata_direct():
             # --- Determine Template and Fetch Schema ---
             template_scope_str = None
             template_key = None
-            doc_type = None # How do we get the doc type? Assume it's stored somewhere or derived.
-            
-            # Placeholder: Try to get doc_type from existing metadata if available
-            # This part needs refinement based on how doc_type is determined in the app
-            # For now, let's check the file name for clues as a fallback
-            if 'loan' in file_name.lower():
-                doc_type = "Loan document"
-            elif 'license' in file_name.lower() or 'driver' in file_name.lower():
-                 doc_type = "Driver License"
-            # Add more robust logic here based on actual application flow
+            doc_type = None
 
-            if doc_type and doc_type in doc_type_to_template_map:
-                template_scope_str, template_key = doc_type_to_template_map[doc_type]
-                logger.info(f"File {file_name} identified as '{doc_type}', using template {template_scope_str}/{template_key}")
+            # --- NEW FIX: Get doc_type from categorization results --- 
+            categorization_results = st.session_state.get("document_categorization", {}).get("results", {})
+            # Use str(file_id) for lookup consistency
+            doc_type = categorization_results.get(str(file_id), {}).get("category")
+            if doc_type:
+                logger.info(f"Retrieved document type 	'{doc_type}'	 from categorization results for file {file_id}")
             else:
-                # Fallback or default behavior if no template mapping found
-                logger.warning(f"Could not determine document type or template mapping for {file_name}. Applying as properties metadata.")
-                # Apply as properties metadata (code for this needs to be added/confirmed)
-                # For now, let's return an error if template cannot be determined
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": False,
-                    "error": f"Could not determine metadata template for document type: {doc_type or 'Unknown'}"
-                }
+                logger.warning(f"Could not retrieve document type from categorization results for file {file_id}. Template mapping might fail.")
+            # --- END NEW FIX ---
+
+            # --- Use the retrieved doc_type for template mapping ---
+            # Get the mapping from session state (assuming it's loaded elsewhere)
+            doc_type_to_template_map = st.session_state.get("document_type_to_template", {})
+            
+            if doc_type and doc_type in doc_type_to_template_map:
+                template_id = doc_type_to_template_map[doc_type]
+                if template_id:
+                    # Parse the template_id (e.g., "enterprise_12345_myTemplate" or "enterprise_myTemplate")
+                    parts = template_id.split('_')
+                    if len(parts) >= 2:
+                        scope = parts[0]
+                        key = '_'.join(parts[1:])
+                        # Handle potential enterprise ID in scope like "enterprise_12345"
+                        if scope.startswith('enterprise') and len(parts) > 2 and parts[1].isdigit():
+                            template_scope_str = f"{parts[0]}_{parts[1]}" # e.g., enterprise_12345
+                            template_key = '_'.join(parts[2:])
+                        else:
+                            template_scope_str = scope # e.g., enterprise or global
+                            template_key = key
+                        logger.info(f"File {file_name} identified as '{doc_type}', using template {template_scope_str}/{template_key}")
+                    else:
+                        logger.error(f"Invalid template ID format '{template_id}' found in mapping for doc type '{doc_type}'.")
+                else:
+                    logger.warning(f"Template mapping found for doc type '{doc_type}', but the template ID is empty or None.")
+            else:
+                logger.warning(f"No template mapping found in session state for document type: {doc_type or 'Unknown'}")
+
+            # --- Fallback or error if template not determined ---
+            if not template_scope_str or not template_key:
+                # Fallback to default template from config if available
+                default_template_id = st.session_state.get("metadata_config", {}).get("template_id")
+                if default_template_id:
+                    logger.warning(f"Falling back to default template ID: {default_template_id}")
+                    parts = default_template_id.split('_')
+                    if len(parts) >= 2:
+                        scope = parts[0]
+                        key = '_'.join(parts[1:])
+                        if scope.startswith('enterprise') and len(parts) > 2 and parts[1].isdigit():
+                            template_scope_str = f"{parts[0]}_{parts[1]}"
+                            template_key = '_'.join(parts[2:])
+                        else:
+                            template_scope_str = scope
+                            template_key = key
+                        logger.info(f"Using default template {template_scope_str}/{template_key}")
+                    else:
+                         logger.error(f"Invalid default template ID format: {default_template_id}")
+                else:
+                    logger.error(f"Could not determine template (specific or default) for file {file_name}. Cannot apply template metadata.")
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_name,
+                        "success": False,
+                        "error": f"Could not determine metadata template for document type: {doc_type or 'Unknown'}"
+                    }
 
             # Fetch the template schema using the scope string
             template_schema = get_template_schema(client, template_scope_str, template_key)
@@ -611,6 +652,10 @@ def apply_metadata_direct():
             # --- Apply Metadata to Box --- 
             logger.info(f"Applying CONVERTED metadata to {file_name} ({file_id}) using template {template_scope_str}/{template_key}: {json.dumps(converted_metadata, default=str)}")
             
+            # --- ADDED LOGGING: Log the scope parameter being used for the API call ---
+            logger.info(f"Using scope parameter 	'{scope_param_for_update}'	 for metadata API call (template: {template_scope_str}/{template_key})")
+            # --- END ADDED LOGGING ---
+
             try:
                 # Get the metadata resource object
                 metadata_resource = client.file(file_id=file_id).metadata(
