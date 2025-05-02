@@ -545,6 +545,10 @@ def apply_metadata_direct():
             # --- Use the retrieved doc_type for template mapping ---
             # Get the mapping from session state (assuming it's loaded elsewhere)
             doc_type_to_template_map = st.session_state.get("document_type_to_template", {})
+            # --- ADDED LOGGING: Log retrieved doc_type and available mapping keys ---
+            logger.info(f"Retrieved doc_type for mapping lookup: 	'{doc_type}'")
+            logger.info(f"Available keys in doc_type_to_template_map: {list(doc_type_to_template_map.keys())}")
+            # --- END ADDED LOGGING ---
             
             if doc_type and doc_type in doc_type_to_template_map:
                 template_id = doc_type_to_template_map[doc_type]
