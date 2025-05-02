@@ -428,9 +428,10 @@ def apply_metadata_direct():
                     }
 
                 logger.info(f"Using template-based metadata application with scope: {scope_with_id}, template: {template_key}")
-                               try:
+                try:
                     # ENHANCED FIX: Step 1 - Fix metadata format by converting string representations to dictionaries
-                    formatted_metadata = fix_metadata_format(metadata_values)                   logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
+                    formatted_metadata = fix_metadata_format(metadata_values)
+                    logger.info(f"Formatted metadata after fix_metadata_format: {json.dumps(formatted_metadata, default=str)}")
                     
                     # ENHANCED FIX: Step 2 - Flatten metadata structure to match template requirements
                     flattened_metadata = flatten_metadata_for_template(formatted_metadata)
