@@ -622,11 +622,12 @@ def apply_metadata_direct():
                     if key in template_schema:
                         field_type = template_schema[key]
                         converted_value = convert_value_for_template(key, value, field_type)
-                        # Only include if conversion didn't result in None explicitly (unless original was None)
-                        if converted_value is not None or value is None: 
+                        # Only include if the converted value is not None
+                        if converted_value is not None:
                             converted_metadata[key] = converted_value
+                            logger.info(f"Added field \t\'{key}\'\t with converted value: {repr(converted_value)}") # Added logging for clarity
                         else:
-                            logger.warning(f"Skipping key '{key}' due to conversion issue (original: {value!r}).")
+                            logger.warning(f"Skipping field \t\'{key}\'\t because its value is None after conversion (original: {repr(value)}).")
                     else:
                         logger.warning(f"Key '{key}' from extracted metadata not found in template {template_scope_str}/{template_key}. Skipping this field.")
             
